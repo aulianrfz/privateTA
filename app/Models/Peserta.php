@@ -53,4 +53,10 @@ class Peserta extends Model
         return $this->hasMany(Jadwal::class);
     }
 
+    public function tim()
+    {
+        return $this->belongsToMany(Tim::class, 'bergabung')->withPivot('posisi')->withTimestamps();
+    }
+
+
 }

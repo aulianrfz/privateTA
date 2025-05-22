@@ -13,12 +13,15 @@ class Jadwal extends Model
         'nama_jadwal',
         'tahun',
         'sub_kategori_id',
+        'tanggal',
         'waktu_mulai',
         'waktu_selesai',
         'venue_id',
         'peserta_id',
         'juri_id',
         'version',
+        'tim_id',
+        'status'
     ];
 
     public function subKategori()
@@ -39,5 +42,10 @@ class Jadwal extends Model
     public function juri()
     {
         return $this->belongsTo(Juri::class, 'juri_id');
+    }
+
+    public function tim()
+    {
+        return $this->belongsTo(Tim::class, 'tim_id');
     }
 }

@@ -37,6 +37,13 @@ Route::get('/jadwal/{id}/edit', [PenjadwalanController::class, 'edit'])->name('j
 Route::put('/jadwal/{id}', [PenjadwalanController::class, 'update'])->name('jadwal.update');
 Route::get('/jadwal/{nama_jadwal}/{tahun}/{version}/create', [PenjadwalanController::class, 'createWithDetail'])->name('jadwal.create.withDetail');
 Route::post('/jadwal/add', [PenjadwalanController::class, 'add'])->name('jadwal.add');
+Route::delete('/jadwal/{id}', [PenjadwalanController::class, 'destroy'])->name('jadwal.destroy');
+
+Route::get('/test-job', function () {
+    Log::info("Test job dispatch");
+
+    App\Jobs\ProsesPenjadwalanJob::dispatch('08:00', '17:00', [], []);
+});
 
 
 Route::get('/', function () {

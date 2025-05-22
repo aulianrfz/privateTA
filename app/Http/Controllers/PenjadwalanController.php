@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\KategoriLomba;
 use App\Models\Venue;
+use App\Models\Tim;
 use App\Models\Peserta;
 use App\Models\Jadwal;
 use App\Models\SubKategori;
@@ -12,6 +13,7 @@ use App\Models\Juri;
 use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use App\Jobs\ProsesPenjadwalanJob;
 
 
 
@@ -35,7 +37,7 @@ class PenjadwalanController extends Controller
 
     public function detail($nama_jadwal, $tahun, $version)
     {
-        $jadwals = Jadwal::with(['subKategori', 'venue', 'peserta', 'juri'])
+        $jadwals = Jadwal::with(['subKategori', 'venue', 'peserta', 'juri', 'tim'])
             ->where('nama_jadwal', $nama_jadwal)
             ->where('tahun', $tahun)
             ->where('version', $version)
@@ -133,26 +135,51 @@ class PenjadwalanController extends Controller
 
     public function createStep2(Request $request)
     {
-        // Validasi input dari step 1
         $validated = $request->validate([
             'nama_jadwal' => 'required|string|max:255',
-            'tanggal' => 'required|date',
-            'waktu_mulai' => 'required|date_format:H:i',
-            'waktu_selesai' => 'required|date_format:H:i|after:waktu_mulai',
+            'tanggal_awal' => 'required|date',
+            'tanggal_akhir' => 'required|date|after_or_equal:tanggal_awal',
+            'tanggal' => 'required|array',
+            'waktu_mulai' => 'required|array',
+            'waktu_selesai' => 'required|array',
+            'waktu_mulai.*' => 'required|date_format:H:i',
+            'waktu_selesai.*' => 'required|date_format:H:i',
         ]);
 
-        // Simpan ke session / lanjut ke halaman selanjutnya
+        // Validasi waktu_mulai < waktu_selesai per tanggal
+        foreach ($request->tanggal as $i => $tanggal) {
+            if ($request->waktu_mulai[$i] >= $request->waktu_selesai[$i]) {
+                return back()->withErrors(["Waktu selesai harus lebih besar dari waktu mulai pada tanggal $tanggal"]);
+            }
+        }
 
+        // Format data per tanggal
+        $jadwal_per_tanggal = [];
+        foreach ($request->tanggal as $i => $tanggal) {
+            $jadwal_per_tanggal[] = [
+                'tanggal' => $tanggal,
+                'waktu_mulai' => $request->waktu_mulai[$i],
+                'waktu_selesai' => $request->waktu_selesai[$i],
+            ];
+        }
+
+        // Simpan ke session
         session([
-            'jadwal_nama' => $validated['nama_jadwal'],
-            'jadwal_tanggal' => [$validated['tanggal']],
-            'jadwal_waktu_mulai' => $validated['waktu_mulai'],
-            'jadwal_waktu_selesai' => $validated['waktu_selesai'],
+            'jadwal_nama' => $request->nama_jadwal,
+            'jadwal_tanggal_rentang' => [
+                'tanggal_awal' => $request->tanggal_awal,
+                'tanggal_akhir' => $request->tanggal_akhir,
+            ],
+            'jadwal_harian' => $jadwal_per_tanggal,
         ]);
-        // Atau langsung simpan dan redirect
-        // Untuk sekarang, contoh langsung redirect ke step 2 (buat view-nya jika perlu)
-        return view('jadwal.create-step2', ['data' => $validated]);
+
+        return view('jadwal.create-step2', [
+            'jadwal_nama' => $request->nama_jadwal,
+            'jadwal_rentang' => $request->only(['tanggal_awal', 'tanggal_akhir']),
+            'jadwal_harian' => $jadwal_per_tanggal,
+        ]);
     }
+
 
     public function createStep3(Request $request)
     {
@@ -168,45 +195,64 @@ class PenjadwalanController extends Controller
         $kategori = SubKategori::find($validated['kategori_lomba']);
         $peserta = Peserta::find($validated['peserta']);
 
-        $tanggal = session('jadwal_tanggal', []);
-        // dd(session('jadwal_tanggal'));
-        $jumlahHari = is_array($tanggal) ? count($tanggal) : 1;
-
+        // Ambil dari session
+        $jadwalHarian = session('jadwal_harian', []);
         $subKategoriLomba = $this->processSubKategoriLomba();
 
-        return view('jadwal.create-step3', compact('venue', 'juri', 'kategori', 'peserta', 'subKategoriLomba', 'jumlahHari'));
+        return view('jadwal.create-step3', compact(
+            'venue',
+            'juri',
+            'kategori',
+            'peserta',
+            'subKategoriLomba',
+            'jadwalHarian'
+        ));
     }
+
 
     public function store(Request $request)
     {
+        Log::debug('Memulai proses store constraint lomba.');
+
         // Validasi form constraint tambahan jika diperlukan
         $validated = $request->validate([
             'hari' => 'nullable|array',
             'waktu_mulai' => 'nullable|array',
             'waktu_selesai' => 'nullable|array',
+            'saving_time' => 'nullable|array',
         ]);
+
+        Log::debug('Data yang divalidasi:', $validated);
 
         $hari = $request->input('hari', []);
         $waktuMulai = $request->input('waktu_mulai', []);
         $waktuSelesai = $request->input('waktu_selesai', []);
+        $savingTime = $request->input('saving_time', []);
+
+        Log::debug('Input hari:', $hari);
+        Log::debug('Input waktu_mulai:', $waktuMulai);
+        Log::debug('Input waktu_selesai:', $waktuSelesai);
 
         $constraint = [];
 
-        // Gabungkan menjadi array terstruktur per sub_kategori_id
         foreach ($hari as $subKategoriId => $value) {
             $constraint[$subKategoriId] = [
-                'hari' => $value,
+                'hari' => is_array($value) ? $value : [$value],
                 'waktu_mulai' => $waktuMulai[$subKategoriId] ?? null,
                 'waktu_selesai' => $waktuSelesai[$subKategoriId] ?? null,
+                'saving_time' => $savingTime[$subKategoriId] ?? null,
             ];
+
+            Log::debug("Constraint untuk sub_kategori_id {$subKategoriId}:", $constraint[$subKategoriId]);
         }
 
         // Simpan ke session
         session(['constraint_lomba' => $constraint]);
 
+        Log::debug('Constraint disimpan ke session:', $constraint);
+
         // Lanjutkan ke proses penjadwalan
         return $this->prosesJadwal($request);
-
     }
 
     public function switchJadwal($nama_jadwal, $tahun, $version)
@@ -408,157 +454,271 @@ class PenjadwalanController extends Controller
     public function constraintPropagation($startTime, $endTime, $variabelX, $pesertaKategori)
     {
         $domain = [];
+        $constraints = session('constraint_lomba', []);
+        $jadwalHarian = session('jadwal_harian', []);
 
         foreach ($variabelX as $var) {
-            $nameLomba = $var['kategori_lomba'];
-            $nim = $var['nim'];
-            $key = $nameLomba . '-' . $nim;
+            $kategoriLomba = $var['kategori_lomba'];
+            $anggotaList = $var['anggota']; // array of NIM
+            $namaTim = $var['nama_tim']; // null kalau individu
 
-            $pesertaLomba = collect([$var]);
+            // Log::info("=== Mulai proses kategori lomba: $kategoriLomba ===");
 
-            // Debug: Check each participant's category and their respective subcategory
-            Log::info("Processing peserta: $nim, lomba: $nameLomba");
-
-            $subKategori = SubKategori::where('name_lomba', $nameLomba)->first();
+            $subKategori = SubKategori::where('name_lomba', $kategoriLomba)->first();
             if (!$subKategori) {
-                Log::warning("SubKategori not found for lomba: $nameLomba");
+                Log::warning("SubKategori tidak ditemukan untuk lomba: $kategoriLomba");
                 continue;
             }
 
             $subKategoriId = $subKategori->id;
-
-            $juriList = Juri::whereHas('subKategori', function ($query) use ($subKategoriId) {
-                $query->where('sub_kategori_id', $subKategoriId);
-            })->get();
-
-            $durasi = $subKategori->durasi ?? 30;
-
-            $availableSlots = $this->generateTimeSlots($startTime, $endTime, $durasi);
-
-            // Debug: Check the generated available slots
-            Log::info("Available slots for lomba $nameLomba: ", $availableSlots);
-
-            $validSlots = [];
-
-            foreach ($availableSlots as $slot) {
-                foreach ($juriList as $juri) {
-                    $conflict = Jadwal::where(function ($query) use ($juri, $slot) {
-                        $query->where('juri_id', $juri->id)
-                            ->where(function ($q) use ($slot) {
-                                $q->whereBetween('waktu_mulai', [$slot['waktu_mulai'], $slot['waktu_selesai']])
-                                    ->orWhereBetween('waktu_selesai', [$slot['waktu_mulai'], $slot['waktu_selesai']]);
-                            });
-                    })->exists();
-
-                    if (!$conflict) {
-                        // Debug: Valid slot found, add to valid slots
-                        Log::info("Valid slot found for juri: {$juri->nama} at waktu: {$slot['waktu_mulai']} - {$slot['waktu_selesai']}");
-
-                        $validSlots[] = [
-                            'waktu_mulai' => $slot['waktu_mulai'],
-                            'waktu_selesai' => $slot['waktu_selesai'],
-                            'juri' => $juri->nama,
-                            'kategori_lomba' => $nameLomba,
-                            'peserta' => $nim,
-                        ];
-                    }
-                }
+            $venueId = $subKategori->venue_id;
+            if (!$venueId) {
+                $randomVenue = Venue::inRandomOrder()->first();
+                $venueId = $randomVenue?->id;
+                // Log::warning("SubKategori $kategoriLomba tidak memiliki venue_id, memilih venue acak: " . ($venueId ?? 'none'));
             }
 
-            $domain[$key] = $validSlots;
+            $durasi = $subKategori->durasi ?? 30;
+            $savingTime = 0;
+
+            $constraint = $constraints[$subKategoriId] ?? null;
+            if ($constraint && isset($constraint['saving_time']) && is_numeric($constraint['saving_time'])) {
+                $savingTime = (int) $constraint['saving_time'];
+            }
+
+            $allSlots = [];
+            foreach ($jadwalHarian as $jadwal) {
+                $tanggal = $jadwal['tanggal'];
+                $mulai = $jadwal['waktu_mulai'];
+                $selesai = $jadwal['waktu_selesai'];
+
+                $startDateTime = Carbon::parse("$tanggal $mulai");
+                $endDateTime = Carbon::parse("$tanggal $selesai");
+
+                $slots = $this->generateTimeSlots($startDateTime, $endDateTime, $durasi, $savingTime);
+
+                $allSlots = array_merge($allSlots, $slots);
+            }
+
+            // Log::debug("Total slot yang dihasilkan: " . count($allSlots));
+
+            $filteredSlots = $this->filterSlotsByConstraint($allSlots, $constraint);
+            // Log::info("Jumlah slot setelah filter constraint: " . count($filteredSlots));
+            // Log::debug("Detail slot setelah filter constraint:", $filteredSlots);
+
+            // buat key tergantung tim atau individu
+            if ($namaTim) {
+                // domain untuk tim: satu key per tim
+                $key = $kategoriLomba . '-' . $namaTim;
+                $domain[$key] = [];
+
+                foreach ($filteredSlots as $slot) {
+                    $domain[$key][] = [
+                        'tanggal' => $slot['tanggal'],
+                        'waktu_mulai' => $slot['waktu_mulai'],
+                        'waktu_selesai' => $slot['waktu_selesai'],
+                        'kategori_lomba' => $kategoriLomba,
+                        'venue' => $venueId,
+                        'peserta' => $anggotaList, // array anggota tim
+                    ];
+                }
+
+                // Log::info("Tim $namaTim pada kategori $kategoriLomba mendapatkan " . count($domain[$key]) . " slot.");
+            } else {
+                // domain untuk peserta individu: key per nim
+                foreach ($anggotaList as $nim) {
+                    $key = $kategoriLomba . '-' . $nim;
+                    $domain[$key] = [];
+
+                    foreach ($filteredSlots as $slot) {
+                        $domain[$key][] = [
+                            'tanggal' => $slot['tanggal'],
+                            'waktu_mulai' => $slot['waktu_mulai'],
+                            'waktu_selesai' => $slot['waktu_selesai'],
+                            'kategori_lomba' => $kategoriLomba,
+                            'venue' => $venueId,
+                            'peserta' => [$nim], // satu anggota dalam array supaya konsisten
+                        ];
+                    }
+
+                    // Log::info("Peserta $nim pada kategori $kategoriLomba mendapatkan " . count($domain[$key]) . " slot.");
+                }
+            }
         }
 
         return $domain;
     }
 
 
-    private function generateTimeSlots($startTime, $endTime, $durasi)
+    private function filterSlotsByConstraint(array $slots, ?array $constraint): array
+    {
+        if (!$constraint) {
+            // Log::debug("Tidak ada constraint, semua slot dikembalikan.");
+            return $slots;
+        }
+
+        $hariConstraint = $constraint['hari'] ?? null; // ['Monday', 'Wednesday']
+        $waktuMulaiConstraint = $constraint['waktu_mulai'] ?? null;
+        $waktuSelesaiConstraint = $constraint['waktu_selesai'] ?? null;
+
+        // Log::debug("Memulai filter slot dengan constraint: hari=" . json_encode($hariConstraint) . ", mulai=$waktuMulaiConstraint, selesai=$waktuSelesaiConstraint");
+
+        $filtered = [];
+
+        foreach ($slots as $index => $slot) {
+            $slotStart = Carbon::parse($slot['waktu_mulai']);
+            $slotEnd = Carbon::parse($slot['waktu_selesai']);
+
+            $slotDate = Carbon::parse($slot['waktu_mulai'])->format('Y-m-d');
+
+            $startTime = $slotStart->format('H:i');
+            $endTime = $slotEnd->format('H:i');
+
+            // Log::debug("Memeriksa slot ke-$index: {$slotStart} - {$slotEnd} (Hari: $slotDate , $startTime - $endTime)");
+
+            // Cek hari
+            if ($hariConstraint && !in_array($slotDate, $hariConstraint)) {
+                // Log::debug("❌ Slot ditolak karena tanggal $slotDate tidak termasuk dalam constraint.");
+                continue;
+            }
+
+            // Cek waktu mulai
+            if ($waktuMulaiConstraint && $startTime < $waktuMulaiConstraint) {
+                // Log::debug("❌ Slot ditolak karena mulai $startTime < batas constraint mulai $waktuMulaiConstraint");
+                continue;
+            }
+
+            // Cek waktu selesai
+            if ($waktuSelesaiConstraint && $endTime > $waktuSelesaiConstraint) {
+                // Log::debug("❌ Slot ditolak karena selesai $endTime > batas constraint selesai $waktuSelesaiConstraint");
+                continue;
+            }
+
+            // Log::debug("✅ Slot diterima.");
+            $filtered[] = $slot;
+        }
+
+        // Log::info("Total slot setelah filter constraint: " . count($filtered));
+        return $filtered;
+    }
+
+
+
+    private function generateTimeSlots($startTime, $endTime, $durasi, $savingTime = 0)
     {
         $slots = [];
         $current = Carbon::parse($startTime);
         $end = Carbon::parse($endTime);
 
-        while ($current->addMinutes(0) < $end) {
+        while ($current < $end) {
             $slotStart = $current->copy();
-            $slotEnd = $current->copy()->addMinutes($durasi);
+            $slotEnd = $slotStart->copy()->addMinutes($durasi);
 
-            if ($slotEnd > $end)
+            if ($slotEnd > $end) {
                 break;
+            }
 
             $slots[] = [
-                'waktu_mulai' => $slotStart->toDateTimeString(),
-                'waktu_selesai' => $slotEnd->toDateTimeString(),
+                'tanggal' => $slotStart->toDateString(),          // tetap simpan tanggal terpisah
+                'waktu_mulai' => $slotStart->format('H:i'),      // hanya jam:menit
+                'waktu_selesai' => $slotEnd->format('H:i'),      // hanya jam:menit
             ];
 
-            $current->addMinutes($durasi);
+            $current = $slotEnd->copy()->addMinutes($savingTime);
         }
 
         return $slots;
     }
 
-
-
     public function prosesJadwal(Request $request)
     {
+        Log::info("Memanggil prosesJadwal");
+        
         $startTime = session('jadwal_waktu_mulai', '08:00');
         $endTime = session('jadwal_waktu_selesai', '17:00');
-
-        // Debug: Request received and processing participants
-        Log::info('Received request for scheduling. Start time: ' . $startTime . ', End time: ' . $endTime);
-
-        // INI GANTI
         $variabelX = $this->processPesertaKategoriLomba();
         $pesertaKategori = $variabelX;
 
-        $domain = $this->constraintPropagation($startTime, $endTime, $variabelX, $pesertaKategori);
-
-        // Debug: Check generated domain
-        Log::info('Generated domain: ', $domain);
-
-        $jadwalValid = $this->backtrack($domain);
-
-        if ($jadwalValid) {
-            foreach ($jadwalValid as $jadwal) {
-                $juri = Juri::where('nama', $jadwal['juri'])->first();
-                $peserta = Peserta::where('nim', $jadwal['peserta'])->first();
-                $subKategori = SubKategori::where('name_lomba', $jadwal['kategori_lomba'])->first();
-
-                // Debug: Scheduling a valid jadwal
-                Log::info("Scheduling jadwal for peserta: {$jadwal['peserta']} with juri: {$jadwal['juri']} from {$jadwal['waktu_mulai']} to {$jadwal['waktu_selesai']}");
-
-                Jadwal::create([
-                    'nama_jadwal' => session('jadwal_nama', 'Jadwal Otomatis'),
-                    'tahun' => now()->year,
-                    'sub_kategori_id' => $subKategori->id ?? null,
-                    'waktu_mulai' => $jadwal['waktu_mulai'],
-                    'waktu_selesai' => $jadwal['waktu_selesai'],
-                    'venue_id' => $subKategori->venue_id ?? null,
-                    'peserta_id' => $peserta->id ?? null,
-                    'juri_id' => $juri->id ?? null,
-                    'version' => 1,
-                ]);
-            }
-
-            session()->forget([
-                'jadwal_nama',
-                'jadwal_waktu_mulai',
-                'jadwal_waktu_selesai',
-                'constraint_lomba',
-            ]);
-
-            // Redirect ke halaman sukses
-            return view('jadwal.berhasil', [
-                'message' => 'Jadwal berhasil dibuat!',
-                'link' => route('jadwal.index')
-            ]);
-        }
+        ProsesPenjadwalanJob::dispatch($startTime, $endTime, $variabelX, $pesertaKategori);
 
         return response()->json([
-            'status' => 'failed',
-            'message' => 'Tidak ada jadwal valid.',
+            'status' => 'success',
+            'message' => 'Penjadwalan sedang diproses di background.',
         ]);
+
     }
 
+
+    // public function prosesJadwal(Request $request)
+    // {
+    //     $startTime = session('jadwal_waktu_mulai', '08:00');
+    //     $endTime = session('jadwal_waktu_selesai', '17:00');
+
+    //     Log::info('Received request for scheduling. Start time: ' . $startTime . ', End time: ' . $endTime);
+
+    //     $variabelX = $this->processPesertaKategoriLomba();
+    //     $pesertaKategori = $variabelX;
+
+    //     set_time_limit(0);
+
+    //     $domain = $this->constraintPropagation($startTime, $endTime, $variabelX, $pesertaKategori);
+
+    //     Log::info('Generated domain: ', $domain);
+
+    //     $jadwalValid = $this->backtrack($domain);
+
+    //     if ($jadwalValid) {
+    //         foreach ($jadwalValid as $jadwal) {
+    //             if (count($jadwal['peserta']) === 1) {
+    //                 // individu
+    //                 $peserta = Peserta::where('nim', $jadwal['peserta'][0])->first();
+    //                 $pesertaId = $peserta?->id;
+    //                 $timId = null;
+    //             } else {
+    //                 // tim
+    //                 $tim = Tim::whereHas('anggota', function ($query) use ($jadwal) {
+    //                     $query->whereIn('nim', $jadwal['peserta']);
+    //                 }, '=', count($jadwal['peserta']))->first();
+
+    //                 $pesertaId = null;
+    //                 $timId = $tim?->id;
+    //             }
+
+    //             $subKategori = SubKategori::where('name_lomba', $jadwal['kategori_lomba'])->first();
+
+    //             Jadwal::create([
+    //                 'nama_jadwal' => session('jadwal_nama', 'Jadwal Otomatis'),
+    //                 'tahun' => now()->year,
+    //                 'tanggal' => $jadwal['tanggal'],
+    //                 'sub_kategori_id' => $subKategori->id ?? null,
+    //                 'waktu_mulai' => $jadwal['waktu_mulai'],
+    //                 'waktu_selesai' => $jadwal['waktu_selesai'],
+    //                 'venue_id' => $subKategori->venue_id ?? null,
+    //                 'peserta_id' => $pesertaId ?? null,
+    //                 'tim_id' => $timId ?? null,
+    //                 'juri_id' => $juri->id ?? null,
+    //                 'version' => 1,
+    //             ]);
+    //         }
+
+    //         session()->forget([
+    //             'jadwal_nama',
+    //             'jadwal_waktu_mulai',
+    //             'jadwal_waktu_selesai',
+    //             'constraint_lomba',
+    //         ]);
+
+    //         return view('jadwal.berhasil', [
+    //             'message' => 'Jadwal berhasil dibuat!',
+    //             'link' => route('jadwal.index')
+    //         ]);
+    //     }
+
+    //     return response()->json([
+    //         'status' => 'failed',
+    //         'message' => 'Tidak ada jadwal valid.',
+    //     ]);
+    // }
 
 
     public function backtrack($domain)
@@ -568,44 +728,49 @@ class PenjadwalanController extends Controller
 
         $backtrackRecursive = function ($depth) use (&$backtrackRecursive, $domain, $kategoriKeys, &$solution) {
             if ($depth === count($kategoriKeys)) {
+                // Log::info("Solusi lengkap ditemukan!");
                 return true;
             }
 
             $currentKey = $kategoriKeys[$depth];
             $slots = $domain[$currentKey];
 
-            Log::info("Backtracking at depth: $depth, key: $currentKey, available slots: ", $slots);
+            // Log::debug("Depth $depth | Proses key: $currentKey | Total slot tersedia: " . count($slots));
 
-            foreach ($slots as $slot) {
-                // Pastikan venue tersedia, bisa diambil dari SubKategori
-                $subKategori = SubKategori::where('name_lomba', $slot['kategori_lomba'])->first();
-                $slot['venue'] = $subKategori->venue_id ?? null;
+            foreach ($slots as $index => $slot) {
+                // Log::debug("Coba slot ke-$index: peserta [" . implode(',', $slot['peserta']) . "] | lomba {$slot['kategori_lomba']} | waktu {$slot['waktu_mulai']} - {$slot['waktu_selesai']} | venue_id {$slot['venue']}");
 
-                if ($this->isConsistent($slot, $solution)) {
+                if ($this->checkConstraint($slot, $solution)) {
+                    // Log::debug("Slot konsisten. Menambahkan ke solusi.");
                     $solution[] = $slot;
 
                     if ($backtrackRecursive($depth + 1)) {
                         return true;
                     }
 
+                    // Log::debug("Backtrack: menghapus slot terakhir dari solusi.");
                     array_pop($solution);
+                } else {
+                    // Log::debug("Slot tidak konsisten. Lewati.");
                 }
             }
 
+            // Log::debug("Tidak ada slot valid pada depth $depth untuk key $currentKey");
             return false;
         };
 
         if ($backtrackRecursive(0)) {
+            // Log::info("Proses backtracking berhasil. Solusi akhir:");
+            // Log::info($solution);
             return $solution;
         }
 
+        // Log::warning("Backtracking gagal: tidak ditemukan solusi valid.");
         return null;
     }
 
 
-
-
-    private function isConsistent($slot, $assignment)
+    private function checkConstraint($slot, $assignment)
     {
         $start = Carbon::parse($slot['waktu_mulai']);
         $end = Carbon::parse($slot['waktu_selesai']);
@@ -617,35 +782,28 @@ class PenjadwalanController extends Controller
             $overlap = $start->lt($assignedEnd) && $end->gt($assignedStart);
 
             if ($overlap) {
-                // Constraint 1: juri bentrok
-                if ($slot['juri'] === $assignedSlot['juri']) {
-                    Log::debug("🚫 Bentrok JURI dengan $key pada waktu {$slot['waktu_mulai']} - {$slot['waktu_selesai']}");
+                // Bentrok peserta: cek irisan anggota peserta
+                $pesertaIntersect = array_intersect($slot['peserta'], $assignedSlot['peserta']);
+                if (!empty($pesertaIntersect)) {
+                    // Log::debug("Bentrok PESERTA anggota [" . implode(',', $pesertaIntersect) . "] dengan $key pada waktu {$slot['waktu_mulai']} - {$slot['waktu_selesai']}");
                     return false;
                 }
 
-                // Constraint 2: peserta bentrok
-                if ($slot['peserta'] === $assignedSlot['peserta']) {
-                    Log::debug("🚫 Bentrok PESERTA dengan $key pada waktu {$slot['waktu_mulai']} - {$slot['waktu_selesai']}");
-                    return false;
-                }
-
-                // Constraint 3: venue bentrok
+                // Bentrok venue
                 if ($slot['venue'] === $assignedSlot['venue']) {
-                    Log::debug("🚫 Bentrok VENUE dengan $key pada waktu {$slot['waktu_mulai']} - {$slot['waktu_selesai']}");
+                    // Log::debug("Bentrok VENUE dengan $key pada waktu {$slot['waktu_mulai']} - {$slot['waktu_selesai']}");
                     return false;
                 }
             }
         }
 
-        return true; // Tidak ada bentrok
+        return true;
     }
 
     public function generateVariabelX()
     {
-        // Ambil kombinasi peserta dan kategori lomba
         $variabelX = $this->processPesertaKategoriLomba();
 
-        // Log hasilnya
         Log::info('Variabel X berhasil dibuat (berdasarkan peserta dan kategori)', ['variabelX' => $variabelX]);
 
         return response()->json([
@@ -657,20 +815,15 @@ class PenjadwalanController extends Controller
 
     private function processSubKategoriLomba()
     {
-        // 1. Ambil semua peserta dan relasi sub_kategori
         $peserta = Peserta::with('subKategori')->get();
 
-        // 2. Ambil semua sub_kategori_id dari peserta
         $subKategoriIds = $peserta->pluck('sub_kategori_id');
 
-        // 3. Kelompokkan berdasarkan sub_kategori_id (otomatis unik)
         $grouped = $subKategoriIds->unique()->values();
 
-        // 4. Simpan hasil sebagai daftar sub kategori lomba
         $subKategoriLomba = [];
 
         foreach ($grouped as $id) {
-            // Mengambil nama sub kategori (nama lomba) dari relasi 'subKategori'
             $subKategori = $peserta->firstWhere('sub_kategori_id', $id)->subKategori;
             $subKategoriLomba[] = [
                 'sub_kategori_id' => $id,
@@ -678,35 +831,77 @@ class PenjadwalanController extends Controller
             ];
         }
 
-        // Kembalikan hasil sub kategori lomba
         return $subKategoriLomba;
     }
 
     public function processPesertaKategoriLomba()
     {
-        // Ambil semua peserta dan relasi kategori lomba (asumsi sudah ada relasi)
-        $peserta = Peserta::with('subKategori')->get();
+        $result = [];
+        $timMap = [];
 
-        // Proses data untuk mengambil nim dan kategori lomba yang diikuti
-        $dataPesertaKategoriLomba = $peserta->map(function ($pesertaItem) {
-            // Ambil nim peserta dan nama kategori lomba
-            $subKategori = $pesertaItem->subKategori; // Mengambil relasi subKategori
+        // === 1. Kelompok ===
+        $timList = Tim::with(['anggota.subKategori'])->get();
+        Log::info('Total tim ditemukan: ' . count($timList));
 
-            return [
-                'nim' => $pesertaItem->nim,
-                'kategori_lomba' => $subKategori ? $subKategori->name_lomba : 'Tidak Diketahui',
+        foreach ($timList as $tim) {
+            Log::info("Proses tim: {$tim->nama_tim}");
+
+            foreach ($tim->anggota as $anggota) {
+                $subKategori = $anggota->subKategori;
+                if (!$subKategori) {
+                    Log::warning("Subkategori tidak ditemukan untuk anggota NIM: {$anggota->nim}");
+                    continue;
+                }
+
+                $key = $subKategori->name_lomba . '-' . $tim->nama_tim;
+
+                $timMap[$key]['kategori_lomba'] = $subKategori->name_lomba;
+                $timMap[$key]['nama_tim'] = $tim->nama_tim;
+                $timMap[$key]['anggota'][] = $anggota->nim;
+
+                Log::info("Anggota {$anggota->nim} ditambahkan ke tim {$tim->nama_tim} untuk lomba {$subKategori->name_lomba}");
+            }
+        }
+
+        // === 2. Individu ===
+        $pesertaIndividu = Peserta::with('subKategori')
+            ->whereDoesntHave('tim')
+            ->get();
+        Log::info('Total peserta individu: ' . count($pesertaIndividu));
+
+        foreach ($pesertaIndividu as $pesertaItem) {
+            $subKategori = $pesertaItem->subKategori;
+            if (!$subKategori) {
+                Log::warning("Subkategori tidak ditemukan untuk peserta individu NIM: {$pesertaItem->nim}");
+                continue;
+            }
+
+            $key = $subKategori->name_lomba . '-' . $pesertaItem->nim;
+
+            $timMap[$key] = [
+                'kategori_lomba' => $subKategori->name_lomba,
+                'nama_tim' => null,
+                'anggota' => [$pesertaItem->nim],
             ];
-        });
 
-        // Kembalikan hasilnya
-        return $dataPesertaKategoriLomba;
+            Log::info("Peserta individu {$pesertaItem->nim} ditambahkan ke lomba {$subKategori->name_lomba}");
+        }
 
-        // return response()->json([
-        //     'status' => 'success',
-        //     'message' => 'Data peserta dan kategori lomba berhasil diambil',
-        //     'data' => $dataPesertaKategoriLomba
-        // ]);
+        $result = array_values($timMap);
+        Log::info('Total hasil peserta-kategori: ' . count($result));
+
+        return $result;
     }
+
+
+    public function destroy($id)
+    {
+        $jadwal = Jadwal::findOrFail($id);
+        $jadwal->delete();
+
+        return redirect()->back()->with('success', 'Jadwal berhasil dihapus.');
+    }
+
 
 
 }
