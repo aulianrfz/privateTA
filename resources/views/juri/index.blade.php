@@ -28,7 +28,7 @@
                 <tr>
                     <td>{{ $juri->nama }}</td>
                     <td>{{ $juri->jabatan }}</td>
-                    <td>{{ $juri->subKategori->name_lomba ?? 'Tidak Diketahui' }}</td>
+                    <td>{{ $juri->mataLomba->nama_lomba ?? 'Tidak Diketahui' }}</td>
                     <td>
                         <a href="{{ route('juri.edit', $juri) }}">Edit</a>
                         <form action="{{ route('juri.destroy', $juri) }}" method="POST" style="display:inline;">

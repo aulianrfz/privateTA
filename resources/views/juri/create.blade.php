@@ -17,10 +17,10 @@
         <input type="text" name="jabatan" required><br><br>
 
         <label>Sub Kategori:</label><br>
-        <select name="sub_kategori_id" required>
+        <select name="mata_lomba_id" required>
             <option value="">-- Pilih Sub Kategori --</option>
             @foreach($subKategoris as $sub)
-                <option value="{{ $sub->id }}">{{ $sub->name_lomba }}</option>
+                <option value="{{ $sub->id }}">{{ $sub->nama_lomba }}</option>
             @endforeach
         </select><br><br>
 

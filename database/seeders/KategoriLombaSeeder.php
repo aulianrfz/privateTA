@@ -14,13 +14,13 @@ class KategoriLombaSeeder extends Seeder
     public function run(): void
     {
         $kategoriLomba = [
-            ['name' => 'Creative Dance', 'duration' => 60],
-            ['name' => 'Tourism Ideathon', 'duration' => 90],
-            ['name' => 'Bidding Event Proposal', 'duration' => 45],
-            ['name' => 'Making Bed', 'duration' => 30],
-            ['name' => 'Tourism Speech Competition', 'duration' => 60],
-            ['name' => 'Manual Brew', 'duration' => 40],
-            ['name' => 'Black Box Cooking Battle', 'duration' => 120],
+            ['name' => 'Creative Dance', 'durasi' => 60],
+            ['name' => 'Tourism Ideathon', 'durasi' => 90],
+            ['name' => 'Bidding Event Proposal', 'durasi' => 45],
+            ['name' => 'Making Bed', 'durasi' => 30],
+            ['name' => 'Tourism Speech Competition', 'durasi' => 60],
+            ['name' => 'Manual Brew', 'durasi' => 40],
+            ['name' => 'Black Box Cooking Battle', 'durasi' => 120],
         ];
 
         foreach ($kategoriLomba as $data) {

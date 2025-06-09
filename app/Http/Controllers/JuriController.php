@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\Juri;
-use App\Models\SubKategori;
+use App\Models\MataLomba;
 
 class JuriController extends Controller
 {
@@ -13,7 +13,7 @@ class JuriController extends Controller
      */
     public function index()
     {
-        $juris = Juri::with('subKategori')->get();
+        $juris = Juri::with('mataLomba')->get();
         return view('juri.index', compact('juris'));
     }
     /**
@@ -21,7 +21,7 @@ class JuriController extends Controller
      */
     public function create()
     {
-        $subKategoris = SubKategori::all();
+        $subKategoris = MataLomba::all();
         return view('juri.create', compact('subKategoris'));
     }
 
@@ -33,12 +33,13 @@ class JuriController extends Controller
         $request->validate([
             'nama' => 'required',
             'jabatan' => 'required',
-            'sub_kategori_id' => 'required|exists:sub_kategori,id',
+            'mata_lomba_id' => 'required|exists:mata_lomba,id',
         ]);
 
         Juri::create($request->all());
         return redirect()->route('juri.index')->with('success', 'Data juri berhasil ditambahkan');
     }
+
     /**
      * Display the specified resource.
      */
@@ -52,7 +53,7 @@ class JuriController extends Controller
      */
     public function edit(Juri $juri)
     {
-        $subKategoris = SubKategori::all();
+        $subKategoris = MataLomba::all();
         return view('juri.edit', compact('juri', 'subKategoris'));
     }
 
@@ -64,7 +65,7 @@ class JuriController extends Controller
         $request->validate([
             'nama' => 'required',
             'jabatan' => 'required',
-            'sub_kategori_id' => 'required|exists:sub_kategori,id',
+            'mata_lomba_id' => 'exists:mata_lomba,id',
         ]);
 
         $juri->update($request->all());

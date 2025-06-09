@@ -19,11 +19,11 @@
         <input type="text" name="jabatan" value="{{ $juri->jabatan }}" required><br><br>
 
         <label>Sub Kategori:</label><br>
-        <select name="sub_kategori_id" required>
+        <select name="mata_lomba_id" required>
             <option value="">-- Pilih Sub Kategori --</option>
             @foreach($subKategoris as $sub)
-                <option value="{{ $sub->id }}" {{ $juri->sub_kategori_id == $sub->id ? 'selected' : '' }}>
-                    {{ $sub->name_lomba }}
+                <option value="{{ $sub->id }}" {{ $juri->mata_lomba_id == $sub->id ? 'selected' : '' }}>
+                    {{ $sub->nama_lomba }}
                 </option>
             @endforeach
         </select><br><br>

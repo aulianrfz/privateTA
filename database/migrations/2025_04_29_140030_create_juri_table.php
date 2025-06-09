@@ -15,10 +15,10 @@ return new class extends Migration
             $table->id();
             $table->string('nama');
             $table->string('jabatan');
-            $table->unsignedBigInteger('sub_kategori_id');
+            $table->unsignedBigInteger('mata_lomba_id');
             $table->timestamps();
 
-            $table->foreign('sub_kategori_id')->references('id')->on('sub_kategori')->onDelete('cascade');
+            $table->foreign('mata_lomba_id')->references('id')->on('mata_lomba')->onDelete('cascade');
         
         
         });

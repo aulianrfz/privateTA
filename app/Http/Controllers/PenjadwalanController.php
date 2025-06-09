@@ -4,12 +4,16 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\KategoriLomba;
+use App\Models\Membayar;
 use App\Models\Venue;
 use App\Models\Tim;
 use App\Models\Peserta;
 use App\Models\Jadwal;
-use App\Models\SubKategori;
+use App\Models\Pendaftar;
+use App\Models\Agenda;
+use App\Models\MataLomba;
 use App\Models\Juri;
+use App\Models\Event;
 use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -22,138 +26,453 @@ class PenjadwalanController extends Controller
 
     // public function index()
     // {
-    //     $jadwals = Jadwal::with(['subKategori', 'venue', 'peserta', 'juri'])->get();
+    //     $jadwals = Jadwal::with(['mataLomba', 'venue', 'peserta', 'juri'])->get();
     //     return view('jadwal.index', compact('jadwals'));
     // }
 
-    public function index()
+
+    public function event()
     {
-        $jadwals = DB::table('jadwal')
-            ->select('nama_jadwal', 'tahun', 'version')
-            ->distinct()
-            ->get();
-        return view('jadwal.index', compact('jadwals'));
+        $events = Event::all();
+        return view('jadwal.event', compact('events'));
     }
 
-    public function detail($nama_jadwal, $tahun, $version)
+    public function index($event_id)
     {
-        $jadwals = Jadwal::with(['subKategori', 'venue', 'peserta', 'juri', 'tim'])
-            ->where('nama_jadwal', $nama_jadwal)
-            ->where('tahun', $tahun)
-            ->where('version', $version)
-            ->get();
-        return view('jadwal.detail', compact('jadwals', 'nama_jadwal', 'tahun', 'version'));
+        $jadwals = Jadwal::where('event_id', $event_id)->get();
+
+        $event = Event::findOrFail($event_id);
+
+        return view('jadwal.index', compact('jadwals', 'event'));
     }
+
+    public function change($id)
+    {
+        $jadwalMaster = Jadwal::findOrFail($id);
+
+        // Ambil data Agenda dengan relasi yang diperlukan
+        $agendas = Agenda::select('agenda.*')
+            ->join('mata_lomba', 'agenda.mata_lomba_id', '=', 'mata_lomba.id')
+            ->join('venue', 'agenda.venue_id', '=', 'venue.id') // join venue
+            ->where('jadwal_id', $id)
+            ->orderBy('tanggal') // urutkan tanggal dulu
+            ->orderBy('venue.name') // urutkan berdasarkan nama venue
+            ->orderBy('waktu_mulai') // urutkan berdasarkan jam mulai (pagi dulu)
+            ->with(['mataLomba', 'venue', 'peserta', 'juri', 'tim']) // relasi tetap diambil
+            ->get();
+
+        return view('jadwal.change', [
+            'jadwalMaster' => $jadwalMaster,
+            'jadwals' => $agendas,
+            'nama_jadwal' => $jadwalMaster->nama_jadwal,
+            'tahun' => $jadwalMaster->tahun,
+            'version' => $jadwalMaster->version,
+        ]);
+    }
+
+
+
+    public function detail(Request $request, $id)
+    {
+        $jadwalMaster = Jadwal::findOrFail($id);
+
+        // Ambil semua tanggal unik dan subkategori
+        $allDates = Agenda::where('jadwal_id', $id)->distinct()->pluck('tanggal');
+        $allSubKategori = Agenda::with('mataLomba')
+            ->where('jadwal_id', $id)
+            ->get()
+            ->pluck('mataLomba')
+            ->unique('id');
+
+        // Filter
+        $tanggalFilter = $request->input('tanggal', $allDates->first());
+        $mataLombaId = $request->input('mata_lomba');
+
+        $query = Agenda::with(['mataLomba', 'venue', 'juri', 'peserta', 'tim'])
+            ->where('jadwal_id', $id)
+            ->whereDate('tanggal', $tanggalFilter);
+
+        if ($mataLombaId) {
+            $query->where('mata_lomba_id', $mataLombaId);
+        }
+
+        $filteredJadwals = $query->get();
+
+        // Tambahin slotHeight & timeSlots
+        $slotHeight = 40; // Pixel per slot
+        $startHour = 7; // Jam mulai grid
+        $endHour = 17; // Jam selesai grid
+        $timeSlots = [];
+        for ($hour = $startHour; $hour <= $endHour; $hour++) {
+            $timeSlots[] = sprintf('%02d:00', $hour);
+            $timeSlots[] = sprintf('%02d:30', $hour);
+        }
+
+        // Hitung start_slot dan duration_slot untuk grid
+        $filteredJadwals = $filteredJadwals->map(function ($item) use ($startHour) {
+            $start = \Carbon\Carbon::parse($item->start_time);
+            $end = \Carbon\Carbon::parse($item->end_time);
+            $item->start_slot = ($start->hour - $startHour) * 2 + ($start->minute >= 30 ? 1 : 0);
+            $item->duration_slot = max(1, $end->diffInMinutes($start) / 30); // Durasi minimal 1 slot
+            return $item;
+        });
+
+        return view('jadwal.detail', [
+            'jadwalMaster' => $jadwalMaster,
+            'jadwals' => $filteredJadwals,
+            'nama_jadwal' => $jadwalMaster->nama_jadwal,
+            'tahun' => $jadwalMaster->tahun,
+            'version' => $jadwalMaster->version,
+            'allDates' => $allDates,
+            'allSubKategori' => $allSubKategori,
+            'selectedDate' => $tanggalFilter,
+            'selectedSubKategori' => $mataLombaId,
+            'timeSlots' => $timeSlots,
+            'slotHeight' => $slotHeight
+        ]);
+    }
+
+
 
     public function create()
     {
         return view('jadwal.create'); // buat view ini
     }
 
-    public function edit($id)
+    // public function edit($id)
+    // {
+    //     $jadwal = Agenda::findOrFail($id); // Cari Agenda, bukan Jadwal
+    //     $mata_lomba = MataLomba::all();
+    //     $venue = Venue::all();
+    //     $peserta = Peserta::all();
+    //     $juri = Juri::all();
+
+    //     return view('jadwal.edit', compact('jadwal', 'mata_lomba', 'venue', 'peserta', 'juri'));
+    // }
+
+    public function edit($agenda_id)
     {
-        $jadwal = Jadwal::findOrFail($id);
-        $sub_kategori = SubKategori::all();
-        $venue = Venue::all();
-        $peserta = Peserta::all();
-        $juri = Juri::all();
+        $agenda = Agenda::findOrFail($agenda_id);
 
-        return view('jadwal.edit', compact('jadwal', 'sub_kategori', 'venue', 'peserta', 'juri'));
-    }
+        $jadwal = Jadwal::find($agenda->jadwal_id);
 
-    public function update(Request $request, $id)
-    {
-        $request->validate([
-            'sub_kategori_id' => 'required|exists:sub_kategori,id',
-            'waktu_mulai' => 'required|date_format:H:i',
-            'waktu_selesai' => 'required|date_format:H:i|after:waktu_mulai',
-            'venue_id' => 'required|exists:venue,id',
-            'peserta_id' => 'required|exists:peserta,id',
-            'juri_id' => 'required|exists:juri,id',
-        ]);
-
-        $force = $request->input('force');
-        $jadwal = Jadwal::findOrFail($id);
-        $waktuMulai = $request->waktu_mulai;
-        $waktuSelesai = $request->waktu_selesai;
-
-        $bentrokJadwal = Jadwal::where('venue_id', $request->venue_id)
-            ->where('id', '!=', $id)
-            ->where(function ($query) use ($waktuMulai, $waktuSelesai) {
-                $query->whereBetween('waktu_mulai', [$waktuMulai, $waktuSelesai])
-                    ->orWhereBetween('waktu_selesai', [$waktuMulai, $waktuSelesai])
-                    ->orWhere(function ($q) use ($waktuMulai, $waktuSelesai) {
-                        $q->where('waktu_mulai', '<=', $waktuMulai)
-                            ->where('waktu_selesai', '>=', $waktuSelesai);
-                    });
-            })
-            ->exists();
-
-        $bentrokPeserta = Jadwal::where('peserta_id', $request->peserta_id)
-            ->where('id', '!=', $id)
-            ->where(function ($query) use ($waktuMulai, $waktuSelesai) {
-                $query->whereBetween('waktu_mulai', [$waktuMulai, $waktuSelesai])
-                    ->orWhereBetween('waktu_selesai', [$waktuMulai, $waktuSelesai])
-                    ->orWhere(function ($q) use ($waktuMulai, $waktuSelesai) {
-                        $q->where('waktu_mulai', '<=', $waktuMulai)
-                            ->where('waktu_selesai', '>=', $waktuSelesai);
-                    });
-            })
-            ->exists();
-
-        $bentrokJuri = Jadwal::where('juri_id', $request->juri_id)
-            ->where('id', '!=', $id)
-            ->where(function ($query) use ($waktuMulai, $waktuSelesai) {
-                $query->whereBetween('waktu_mulai', [$waktuMulai, $waktuSelesai])
-                    ->orWhereBetween('waktu_selesai', [$waktuMulai, $waktuSelesai])
-                    ->orWhere(function ($q) use ($waktuMulai, $waktuSelesai) {
-                        $q->where('waktu_mulai', '<=', $waktuMulai)
-                            ->where('waktu_selesai', '>=', $waktuSelesai);
-                    });
-            })
-            ->exists();
-
-        if (($bentrokJadwal || $bentrokPeserta || $bentrokJuri) && !$force) {
-            return back()->withInput()->with('error_force', 'Terjadi bentrok jadwal. Apakah Anda yakin ingin melanjutkan perubahan?');
+        // Tanggal unik dari agenda di jadwal ini (sama seperti create)
+        $tanggal_unik = [];
+        if ($jadwal) {
+            $tanggal_unik = Agenda::where('jadwal_id', $jadwal->id)
+                ->select(DB::raw('DISTINCT tanggal'))
+                ->orderBy('tanggal')
+                ->pluck('tanggal');
         }
 
-        // Update data
-        $jadwal->update([
-            'sub_kategori_id' => $request->sub_kategori_id,
-            'waktu_mulai' => $waktuMulai,
-            'waktu_selesai' => $waktuSelesai,
-            'venue_id' => $request->venue_id,
-            'peserta_id' => $request->peserta_id,
-            'juri_id' => $request->juri_id,
-        ]);
+        $mata_lomba = MataLomba::all();
+        $venue = Venue::all();
+        $peserta_ids = Membayar::where('status', 'Sudah Membayar')->pluck('peserta_id');
+        $peserta = Peserta::whereIn('id', $peserta_ids)
+            ->orderBy('nama_peserta')
+            ->get();
+        $juri = Juri::all();
+        $tim = Tim::all();
 
-        return redirect()->route('jadwal.index')->with('success', 'Jadwal berhasil diperbarui.');
+        // Data peserta dan tim terkait agenda
+        $peserta_terpilih = $agenda->peserta()->pluck('peserta.id')->toArray();
+        $tim_terpilih = $agenda->tim()->pluck('tim.id')->toArray();
+
+        return view('jadwal.edit', compact(
+            'agenda',
+            'mata_lomba',
+            'venue',
+            'peserta',
+            'juri',
+            'tim',
+            'tanggal_unik',
+            'peserta_terpilih',
+            'tim_terpilih',
+            'jadwal'
+        ));
     }
 
+    public function update(Request $request, $agenda_id)
+    {
+        \Log::info('Memulai update agenda', ['agenda_id' => $agenda_id, 'input' => $request->all()]);
+
+        try {
+            $agenda = Agenda::findOrFail($agenda_id);
+            \Log::info('Agenda ditemukan', ['agenda' => $agenda->toArray()]);
+
+            // Normalisasi waktu (hindari format aneh)
+            if ($request->filled('waktu_mulai')) {
+                $request->merge(['waktu_mulai' => date('H:i', strtotime($request->waktu_mulai))]);
+            }
+            if ($request->filled('waktu_selesai')) {
+                $request->merge(['waktu_selesai' => date('H:i', strtotime($request->waktu_selesai))]);
+            }
+
+            // Validasi request
+            $request->validate([
+                'mata_lomba_id' => 'nullable|exists:mata_lomba,id',
+                'tanggal_dropdown' => 'nullable|string',
+                'tanggal' => 'nullable|date',
+                'waktu_mulai' => 'required|date_format:H:i',
+                'waktu_selesai' => 'required|date_format:H:i|after:waktu_mulai',
+                'kegiatan' => 'nullable|string',
+                'venue_id' => 'nullable|exists:venue,id',
+                'peserta_id' => 'nullable|array',
+                'peserta_id.*' => 'nullable|exists:peserta,id',
+                'tim_id' => 'nullable|array',
+                'tim_id.*' => 'nullable|exists:tim,id',
+                'juri_id' => 'nullable|exists:juri,id',
+                'force' => 'boolean',
+            ]);
+
+            \Log::info('Validasi request berhasil');
+
+            // Tentukan tanggal
+            $tanggal = $request->tanggal_dropdown === 'lainnya'
+                ? $request->tanggal
+                : ($request->tanggal_dropdown ?: $agenda->tanggal);
+
+            if (!$tanggal) {
+                \Log::warning('Tanggal tidak valid', ['input' => $request->all()]);
+                return back()->withInput()->with('error_force', 'Tanggal tidak valid atau kosong.');
+            }
+
+            $waktuMulai = $request->waktu_mulai;
+            $waktuSelesai = $request->waktu_selesai;
+            $venueId = $request->venue_id;
+            $juriId = $request->juri_id;
+
+            // Ambil peserta langsung dan peserta tim
+            $pesertaLangsung = array_filter($request->peserta_id ?? [], fn($id) => !empty($id));
+            $pesertaTim = [];
+            if ($request->tim_id) {
+                $pesertaTim = \App\Models\Bergabung::whereIn('tim_id', $request->tim_id)
+                    ->pluck('peserta_id')
+                    ->unique()
+                    ->toArray();
+            }
+            $allPesertaId = array_unique(array_merge($pesertaLangsung, $pesertaTim));
+
+            $force = $request->boolean('force');
+
+            // Fungsi cek waktu bentrok (dipakai di query)
+            $cekWaktu = function ($query) use ($waktuMulai, $waktuSelesai) {
+                $query->where(function ($q) use ($waktuMulai, $waktuSelesai) {
+                    $q->where('waktu_mulai', '<', $waktuSelesai)
+                        ->where('waktu_selesai', '>', $waktuMulai);
+                });
+            };
+
+
+            $tidakPerluCekBentrok = (
+                $venueId == $agenda->venue_id &&
+                $tanggal == $agenda->tanggal &&
+                strtotime($waktuMulai) >= strtotime($agenda->waktu_mulai) &&
+                strtotime($waktuSelesai) <= strtotime($agenda->waktu_selesai)
+            );
+
+
+            // Cek bentrok venue (harus cek juga tanggal & bukan agenda yang sama)
+            $bentrokVenueList = !$tidakPerluCekBentrok && $venueId ? Agenda::with('mataLomba', 'venue')
+                ->where('jadwal_id', $agenda->jadwal_id)
+                ->where('venue_id', $venueId)
+                ->whereDate('tanggal', $tanggal)
+                ->where('id', '!=', $agenda->id)
+                ->where($cekWaktu)
+                ->get() : collect();
+
+
+            // Cek bentrok peserta
+            $bentrokPesertaList = !empty($allPesertaId) ? Agenda::with('mataLomba', 'peserta')
+                ->where('jadwal_id', $agenda->jadwal_id)
+                ->whereDate('tanggal', $tanggal)
+                ->where('id', '!=', $agenda->id)
+                ->where($cekWaktu)
+                ->whereHas('peserta', function ($query) use ($allPesertaId) {
+                    $query->whereIn('peserta.id', $allPesertaId);
+                })
+                ->get() : collect();
+
+            // dd($pesertaTim);
+
+            // Cek bentrok tim (khusus kalau ingin tampilkan tim yang bentrok)
+            $bentrokTimList = !empty($pesertaTim) ? Agenda::with('mataLomba', 'tim')
+                ->where('jadwal_id', $agenda->jadwal_id)
+                ->whereDate('tanggal', $tanggal)
+                ->where('id', '!=', $agenda->id)
+                ->where($cekWaktu)
+                ->whereHas('tim.peserta', function ($query) use ($pesertaTim) {
+                    $query->whereIn('peserta.id', $pesertaTim);
+                })
+                ->get() : collect();
+
+            // Cek bentrok juri
+            $bentrokJuriList = $juriId ? Agenda::with('mataLomba')
+                ->where('jadwal_id', $agenda->jadwal_id)
+                ->where('juri_id', $juriId)
+                ->whereDate('tanggal', $tanggal)
+                ->where('id', '!=', $agenda->id)
+                ->where($cekWaktu)
+                ->get() : collect();
+
+
+            // … (query bentrok selesai)
+
+            // ─── Bentuk pesan ────────────────────────────────────────────────
+            if (
+                !$force && (
+                    $bentrokVenueList->isNotEmpty() ||
+                    $bentrokPesertaList->isNotEmpty() ||
+                    $bentrokJuriList->isNotEmpty() ||
+                    $bentrokTimList->isNotEmpty()
+                )
+            ) {
+
+                $detail = [];          // ← hanya baris detail
+                // venue
+                foreach ($bentrokVenueList as $b) {
+                    $detail[] = "Lomba {$b->mataLomba->nama_lomba} pada {$b->waktu_mulai}-{$b->waktu_selesai} di {$b->venue->name}";
+                }
+                // peserta
+                foreach ($bentrokPesertaList as $b) {
+                    $peserta = $b->peserta->pluck('nama_peserta')->implode(', ');
+                    $detail[] = "Peserta {$peserta} pada lomba {$b->mataLomba->nama_lomba} {$b->waktu_mulai}-{$b->waktu_selesai}";
+                }
+                // juri
+                foreach ($bentrokJuriList as $b) {
+                    $detail[] = "Juri pada lomba {$b->mataLomba->nama_lomba} {$b->waktu_mulai}-{$b->waktu_selesai}";
+                }
+
+                foreach ($bentrokTimList as $b) {
+                    // dapatkan peserta tim dari agenda bentrok ini
+                    $pesertaBentrok = $b->tim->flatMap(function ($tim) {
+                        return $tim->peserta->pluck('id');
+                    })->unique()->toArray();
+
+                    // cari irisan peserta bentrok dengan pesertaTim (peserta di tim utama)
+                    $pesertaYangBentrok = array_intersect($pesertaTim, $pesertaBentrok);
+
+                    // ambil nama tim yang ada peserta yang bentrok
+                    $namaTimBentrok = $b->tim->filter(function ($tim) use ($pesertaYangBentrok) {
+                        $pesertaTimIni = $tim->peserta->pluck('id')->toArray();
+                        return count(array_intersect($pesertaTimIni, $pesertaYangBentrok)) > 0;
+                    })->pluck('nama_tim')->implode(', ');
+
+                    if ($namaTimBentrok) {
+                        $detail[] = "{$namaTimBentrok} pada lomba {$b->mataLomba->nama_lomba} {$b->waktu_mulai}-{$b->waktu_selesai}";
+                    }
+                }
+
+
+                // header + baris baru
+                $pesan = "Terjadi bentrok:\n\n" . implode("\n", $detail);
+
+                return back()->withInput()->with('error_force', $pesan);
+            }
+
+            // Simpan update agenda
+            $agenda->mata_lomba_id = $request->mata_lomba_id;
+            $agenda->tanggal = $tanggal;
+            $agenda->waktu_mulai = $waktuMulai;
+            $agenda->waktu_selesai = $waktuSelesai;
+            $agenda->kegiatan = $request->kegiatan;
+            $agenda->venue_id = $venueId;
+            $agenda->juri_id = $juriId;
+            $agenda->save();
+
+            $timId = array_filter($request->tim_id ?? [], fn($id) => !empty($id));
+            $agenda->tim()->sync($timId);
+
+
+            $agenda->peserta()->sync($pesertaLangsung);
+
+
+            // Jika ada bentrok dan force, lakukan geser agenda bawahnya mirip add()
+            if ($force && ($bentrokVenueList->isNotEmpty())) {
+                // Ambil semua agenda dalam jadwal, venue, tanggal, urut waktu mulai, kecuali agenda ini
+                $agendaSemua = Agenda::where('jadwal_id', $agenda->jadwal_id)
+                    ->where('venue_id', $venueId)
+                    ->whereDate('tanggal', $tanggal)
+                    ->where('id', '!=', $agenda->id)
+                    ->orderBy('waktu_mulai')
+                    ->get();
+
+                // Cari index agenda pertama yang bentrok dengan agenda ini (baru diupdate)
+                $indexBentrokPertama = $agendaSemua->search(function ($a) use ($waktuMulai, $waktuSelesai) {
+                    $start1 = strtotime($a->waktu_mulai);
+                    $end1 = strtotime($a->waktu_selesai);
+                    $start2 = strtotime($waktuMulai);
+                    $end2 = strtotime($waktuSelesai);
+                    return !($end1 <= $start2 || $start1 >= $end2); // true kalau bentrok
+                });
+
+                if ($indexBentrokPertama !== false) {
+                    // Slice agenda bentrok dan setelahnya
+                    $agendaTerdampak = $agendaSemua->slice($indexBentrokPertama)->values();
+
+                    // Mulai geser dari waktu selesai agenda ini (yang baru diupdate)
+                    $waktuSelesaiBaru = Carbon::createFromFormat('H:i', $waktuSelesai);
+
+                    foreach ($agendaTerdampak as $agendaItem) {
+                        $waktuMulaiLama = Carbon::createFromFormat('H:i:s', $agendaItem->waktu_mulai);
+                        $waktuSelesaiLama = Carbon::createFromFormat('H:i:s', $agendaItem->waktu_selesai);
+                        $durasiAgenda = $waktuMulaiLama->diffInMinutes($waktuSelesaiLama);
+
+                        $waktuMulaiBaru = $waktuSelesaiBaru->copy();
+                        $waktuSelesaiBaru = $waktuMulaiBaru->copy()->addMinutes($durasiAgenda);
+
+                        \Log::info('Geser agenda ID ' . $agendaItem->id, [
+                            'waktu_mulai_lama' => $waktuMulaiLama->format('H:i:s'),
+                            'waktu_selesai_lama' => $waktuSelesaiLama->format('H:i:s'),
+                            'waktu_mulai_baru' => $waktuMulaiBaru->format('H:i'),
+                            'waktu_selesai_baru' => $waktuSelesaiBaru->format('H:i'),
+                        ]);
+
+                        $agendaItem->update([
+                            'waktu_mulai' => $waktuMulaiBaru->format('H:i'),
+                            'waktu_selesai' => $waktuSelesaiBaru->format('H:i'),
+                        ]);
+                    }
+                }
+            }
+
+            $jadwal = $agenda->jadwal;
+
+            return redirect()->route('jadwal.change', ['id' => $jadwal->id])->with('success', 'Agenda berhasil ditambahkan.');
+
+        } catch (\Exception $e) {
+            \Log::error('Error saat update agenda', ['message' => $e->getMessage()]);
+            return back()->withInput()->with('error_force', 'Terjadi kesalahan saat update agenda: ' . $e->getMessage());
+        }
+    }
 
 
 
     public function createStep2(Request $request)
     {
+        $messages = [
+            'nama_jadwal.unique' => 'Nama jadwal sudah digunakan, silakan gunakan nama lain.',
+        ];
+
         $validated = $request->validate([
-            'nama_jadwal' => 'required|string|max:255',
-            'tanggal_awal' => 'required|date',
-            'tanggal_akhir' => 'required|date|after_or_equal:tanggal_awal',
+            'nama_jadwal' => 'required|string|max:255|unique:jadwal,nama_jadwal',
             'tanggal' => 'required|array',
             'waktu_mulai' => 'required|array',
             'waktu_selesai' => 'required|array',
             'waktu_mulai.*' => 'required|date_format:H:i',
             'waktu_selesai.*' => 'required|date_format:H:i',
-        ]);
+        ], $messages);
 
-        // Validasi waktu_mulai < waktu_selesai per tanggal
+        // Validasi bahwa waktu_mulai < waktu_selesai untuk setiap tanggal
         foreach ($request->tanggal as $i => $tanggal) {
             if ($request->waktu_mulai[$i] >= $request->waktu_selesai[$i]) {
-                return back()->withErrors(["Waktu selesai harus lebih besar dari waktu mulai pada tanggal $tanggal"]);
+                return back()->withErrors([
+                    "Waktu selesai harus lebih besar dari waktu mulai pada tanggal $tanggal"
+                ])->withInput();
             }
         }
 
-        // Format data per tanggal
+        // Format data ke dalam array jadwal harian
         $jadwal_per_tanggal = [];
         foreach ($request->tanggal as $i => $tanggal) {
             $jadwal_per_tanggal[] = [
@@ -166,18 +485,312 @@ class PenjadwalanController extends Controller
         // Simpan ke session
         session([
             'jadwal_nama' => $request->nama_jadwal,
-            'jadwal_tanggal_rentang' => [
-                'tanggal_awal' => $request->tanggal_awal,
-                'tanggal_akhir' => $request->tanggal_akhir,
-            ],
             'jadwal_harian' => $jadwal_per_tanggal,
         ]);
 
+
         return view('jadwal.create-step2', [
             'jadwal_nama' => $request->nama_jadwal,
-            'jadwal_rentang' => $request->only(['tanggal_awal', 'tanggal_akhir']),
             'jadwal_harian' => $jadwal_per_tanggal,
         ]);
+    }
+
+    public function prosesJadwal(Request $request)
+    {
+        Log::info("Memanggil prosesJadwal");
+
+        $constraintTambahan = session('constraint_lomba', []);
+        $jadwalHarian = session('jadwal_harian', []);
+        $startTime = session('jadwal_waktu_mulai', '08:00');
+        $endTime = session('jadwal_waktu_selesai', '17:00');
+        $variabelX = $this->processPesertaKategoriLomba();
+        // dd($variabelX);
+        $pesertaKategori = $variabelX;
+        $namaJadwal = session('jadwal_nama', 'Jadwal Otomatis');
+        $tahun = now()->year;
+
+        // 🔹 Buat entri awal jadwal
+        $jadwalAwal = Jadwal::create([
+            'nama_jadwal' => $namaJadwal,
+            'tahun' => $tahun,
+            'version' => '1',
+            'status' => 'Menunggu',
+            'event_id' => '1',
+        ]);
+
+        ProsesPenjadwalanJob::dispatch(
+            $startTime,
+            $endTime,
+            $variabelX,
+            $pesertaKategori,
+            $constraintTambahan,
+            $jadwalHarian,
+            $namaJadwal,
+            $jadwalAwal->id,
+            1
+        );
+
+        // return response()->json([
+        //     'status' => 'success',
+        //     'message' => 'Penjadwalan sedang diproses di background.',
+        // ]);
+
+        session()->forget([
+            'jadwal_nama',
+            'jadwal_waktu_mulai',
+            'jadwal_waktu_selesai',
+            'jadwal_harian',
+            'constraint_lomba',
+        ]);
+
+        return view('jadwal.proses', [
+            'namaJadwal' => $namaJadwal,
+        ]);
+    }
+
+
+
+    // public function createStep2(Request $request)
+    // {
+    //     $validated = $request->validate([
+    //         'nama_jadwal' => 'required|string|max:255',
+    //         'tanggal_awal' => 'required|date',
+    //         'tanggal_akhir' => 'required|date|after_or_equal:tanggal_awal',
+    //         'tanggal' => 'required|array',
+    //         'waktu_mulai' => 'required|array',
+    //         'waktu_selesai' => 'required|array',
+    //         'waktu_mulai.*' => 'required|date_format:H:i',
+    //         'waktu_selesai.*' => 'required|date_format:H:i',
+    //     ]);
+
+    //     // Validasi waktu_mulai < waktu_selesai per tanggal
+    //     foreach ($request->tanggal as $i => $tanggal) {
+    //         if ($request->waktu_mulai[$i] >= $request->waktu_selesai[$i]) {
+    //             return back()->withErrors(["Waktu selesai harus lebih besar dari waktu mulai pada tanggal $tanggal"]);
+    //         }
+    //     }
+
+    //     // Format data per tanggal
+    //     $jadwal_per_tanggal = [];
+    //     foreach ($request->tanggal as $i => $tanggal) {
+    //         $jadwal_per_tanggal[] = [
+    //             'tanggal' => $tanggal,
+    //             'waktu_mulai' => $request->waktu_mulai[$i],
+    //             'waktu_selesai' => $request->waktu_selesai[$i],
+    //         ];
+    //     }
+
+    //     // Simpan ke session
+    //     session([
+    //         'jadwal_nama' => $request->nama_jadwal,
+    //         'jadwal_tanggal_rentang' => [
+    //             'tanggal_awal' => $request->tanggal_awal,
+    //             'tanggal_akhir' => $request->tanggal_akhir,
+    //         ],
+    //         'jadwal_harian' => $jadwal_per_tanggal,
+    //     ]);
+
+    //     return view('jadwal.create-step2', [
+    //         'jadwal_nama' => $request->nama_jadwal,
+    //         'jadwal_rentang' => $request->only(['tanggal_awal', 'tanggal_akhir']),
+    //         'jadwal_harian' => $jadwal_per_tanggal,
+    //     ]);
+    // }
+
+
+    // public function prosesJadwal(Request $request)
+    // {
+    //     Log::info("Memanggil prosesJadwal");
+
+    //     $constraintTambahan = session('constraint_lomba', []);
+    //     $jadwalHarian = session('jadwal_harian', []);
+    //     $startTime = session('jadwal_waktu_mulai', '08:00');
+    //     $endTime = session('jadwal_waktu_selesai', '17:00');
+    //     $variabelX = $this->processPesertaKategoriLomba();
+    //     // dd($variabelX);
+    //     $pesertaKategori = $variabelX;
+    //     $namaJadwal = session('jadwal_nama', 'Jadwal Otomatis');
+    //     $tahun = now()->year;
+
+    //     // 🔹 Buat entri awal jadwal
+    //     $jadwalAwal = Jadwal::create([
+    //         'nama_jadwal' => $namaJadwal,
+    //         'tahun' => $tahun,
+    //         'version' => '1',
+    //         'status' => 'Menunggu',
+    //     ]);
+
+    //     // $penjadwal = new PenjadwalanController();
+
+    //     $domain = $this->constraintPropagation($variabelX, $constraintTambahan, $jadwalHarian);
+    //     Log::info('Generated domain: ' . json_encode($domain));
+
+    //     $jadwalValidSolutions = $this->backtrack($domain);
+
+    //     dd($jadwalValidSolutions);
+
+    //     Log::info("Selesai backtrack pada job");
+
+    //     $version = 1;
+
+    //     if (!$jadwalValidSolutions) {
+    //         Log::warning("Gagal melakukan penjadwalan. Tidak ada jadwal valid ditemukan.");
+    //         if ($version == 1) {
+    //             $jadwalMaster = Jadwal::find($this->jadwalId);
+    //             if ($jadwalMaster) {
+    //                 $jadwalMaster->update(['status' => 'Gagal']);
+    //             }
+    //         }
+    //         return;
+    //     }
+
+    //     // Jika versi 1, pakai jadwal master, versi selanjutnya buat jadwal baru per solusi
+    //     if ($this->version == 1) {
+    //         $jadwalMaster = Jadwal::find($this->jadwalId);
+    //         if (!$jadwalMaster) {
+    //             Log::error("Jadwal master tidak ditemukan");
+    //             return;
+    //         }
+    //         // Simpan solusi pertama ke jadwal master
+    //         $this->saveAgenda($jadwalMaster, $jadwalValidSolutions[0]);
+    //         $jadwalMaster->update(['status' => 'Selesai']);
+
+    //         // Simpan solusi lain sebagai versi 2 dan seterusnya
+    //         for ($i = 1; $i < count($jadwalValidSolutions); $i++) {
+    //             $version = $this->version + $i;
+    //             $jadwalBaru = Jadwal::create([
+    //                 'nama_jadwal' => $this->namaJadwal,
+    //                 'tahun' => now()->year,
+    //                 'version' => $version,
+    //                 'status' => 'Menunggu',
+    //             ]);
+    //             $this->saveAgenda($jadwalBaru, $jadwalValidSolutions[$i]);
+    //             $jadwalBaru->update(['status' => 'Selesai']);
+    //         }
+    //     } else {
+    //         // Untuk versi selain 1, berarti ini pemanggilan job lanjutan
+    //         $jadwalMaster = Jadwal::create([
+    //             'nama_jadwal' => $this->namaJadwal,
+    //             'tahun' => now()->year,
+    //             'version' => $this->version,
+    //             'status' => 'Menunggu',
+    //         ]);
+    //         $this->saveAgenda($jadwalMaster, $jadwalValidSolutions[0]);
+    //         $jadwalMaster->update(['status' => 'Selesai']);
+    //     }
+
+    //     Log::info("Penjadwalan selesai.");
+
+    //     // ProsesPenjadwalanJob::dispatch(
+    //     //     $startTime,
+    //     //     $endTime,
+    //     //     $variabelX,
+    //     //     $pesertaKategori,
+    //     //     $constraintTambahan,
+    //     //     $jadwalHarian,
+    //     //     $namaJadwal,
+    //     //     $jadwalAwal->id,
+    //     //     1
+    //     // );
+
+    //     // return response()->json([
+    //     //     'status' => 'success',
+    //     //     'message' => 'Penjadwalan sedang diproses di background.',
+    //     // ]);
+
+    //     session()->forget([
+    //         'jadwal_nama',
+    //         'jadwal_waktu_mulai',
+    //         'jadwal_waktu_selesai',
+    //         'jadwal_harian',
+    //         'constraint_lomba',
+    //     ]);
+
+    //     return view('jadwal.proses', [
+    //         'namaJadwal' => $namaJadwal,
+    //     ]);
+    // }
+
+
+    private function saveAgenda($jadwalMaster, $jadwalValid)
+    {
+        foreach ($jadwalValid as $jadwal) {
+            $mataLomba = MataLomba::where('nama_lomba', $jadwal['kategori_lomba'])->first();
+            if (!$mataLomba) {
+                Log::warning("MataLomba tidak ditemukan untuk kategori lomba: {$jadwal['kategori_lomba']}");
+                continue;
+            }
+
+            $isSerentak = $mataLomba->is_serentak;
+
+            // Kalau serentak, hanya buat 1 agenda untuk semua peserta
+            if ($isSerentak) {
+                // Buat agenda sekali saja untuk kategori ini (asumsi sudah di-loop di luar per kategori)
+                $agenda = Agenda::create([
+                    'jadwal_id' => $jadwalMaster->id,
+                    'mata_lomba_id' => $mataLomba->id,
+                    'waktu_mulai' => $jadwal['waktu_mulai'],
+                    'waktu_selesai' => $jadwal['waktu_selesai'],
+                    'tanggal' => $jadwal['tanggal'],
+                    'venue_id' => $jadwal['venue'],
+                    'peserta_id' => null,
+                    'tim_id' => null,
+                ]);
+
+                // Attach semua peserta ke agenda via pivot
+                if (!empty($jadwal['peserta'])) {
+                    $pesertaIds = Peserta::whereIn('nim', $jadwal['peserta'])->pluck('id')->toArray();
+                    $agenda->peserta()->sync($pesertaIds);
+                }
+            } else {
+                // Non-serentak
+                if (count($jadwal['peserta']) === 1) {
+                    // Individu
+                    $peserta = Peserta::where('nim', $jadwal['peserta'][0])->first();
+                    if (!$peserta) {
+                        Log::warning("Peserta dengan NIM {$jadwal['peserta'][0]} tidak ditemukan");
+                        continue;
+                    }
+
+                    $agenda = Agenda::create([
+                        'jadwal_id' => $jadwalMaster->id,
+                        'mata_lomba_id' => $mataLomba->id,
+                        'waktu_mulai' => $jadwal['waktu_mulai'],
+                        'waktu_selesai' => $jadwal['waktu_selesai'],
+                        'tanggal' => $jadwal['tanggal'],
+                        'venue_id' => $jadwal['venue'],
+                        'peserta_id' => null,
+                        'tim_id' => null,
+                    ]);
+
+                    $agenda->peserta()->attach($peserta->id);
+
+                } else {
+                    // Tim (lebih dari 1 peserta)
+                    $tim = Tim::whereHas('peserta', function ($query) use ($jadwal) {
+                        $query->whereIn('nim', $jadwal['peserta']);
+                    }, '=', count($jadwal['peserta']))->first();
+
+                    if (!$tim) {
+                        Log::warning("Tim tidak ditemukan untuk peserta: " . implode(',', $jadwal['peserta']));
+                        continue;
+                    }
+
+                    $agenda = Agenda::create([
+                        'jadwal_id' => $jadwalMaster->id,
+                        'mata_lomba_id' => $mataLomba->id,
+                        'waktu_mulai' => $jadwal['waktu_mulai'],
+                        'waktu_selesai' => $jadwal['waktu_selesai'],
+                        'tanggal' => $jadwal['tanggal'],
+                        'venue_id' => $jadwal['venue'],
+                        'peserta_id' => null,
+                        'tim_id' => null,
+                    ]);
+
+                    $agenda->tim()->attach($tim->id);
+                }
+            }
+        }
     }
 
 
@@ -185,26 +798,23 @@ class PenjadwalanController extends Controller
     {
         $validated = $request->validate([
             'venue' => 'required|exists:venue,id',
-            'juri' => 'required|exists:juri,id',
-            'kategori_lomba' => 'required|exists:sub_kategori,id',
+            'kategori_lomba' => 'required|exists:mata_lomba,id',
             'peserta' => 'required|exists:peserta,id',
         ]);
 
         $venue = Venue::find($validated['venue']);
-        $juri = Juri::find($validated['juri']);
-        $kategori = SubKategori::find($validated['kategori_lomba']);
+        $kategori = MataLomba::find($validated['kategori_lomba']);
         $peserta = Peserta::find($validated['peserta']);
 
         // Ambil dari session
         $jadwalHarian = session('jadwal_harian', []);
-        $subKategoriLomba = $this->processSubKategoriLomba();
+        $mataLomba = $this->processSubKategoriLomba();
 
         return view('jadwal.create-step3', compact(
             'venue',
-            'juri',
             'kategori',
             'peserta',
-            'subKategoriLomba',
+            'mataLomba',
             'jadwalHarian'
         ));
     }
@@ -220,6 +830,7 @@ class PenjadwalanController extends Controller
             'waktu_mulai' => 'nullable|array',
             'waktu_selesai' => 'nullable|array',
             'saving_time' => 'nullable|array',
+            'round' => 'nullable|array',
         ]);
 
         Log::debug('Data yang divalidasi:', $validated);
@@ -228,6 +839,7 @@ class PenjadwalanController extends Controller
         $waktuMulai = $request->input('waktu_mulai', []);
         $waktuSelesai = $request->input('waktu_selesai', []);
         $savingTime = $request->input('saving_time', []);
+        $round = $request->input('round', []);
 
         Log::debug('Input hari:', $hari);
         Log::debug('Input waktu_mulai:', $waktuMulai);
@@ -235,16 +847,19 @@ class PenjadwalanController extends Controller
 
         $constraint = [];
 
-        foreach ($hari as $subKategoriId => $value) {
-            $constraint[$subKategoriId] = [
+        foreach ($hari as $mataLombaId => $value) {
+            $constraint[$mataLombaId] = [
                 'hari' => is_array($value) ? $value : [$value],
-                'waktu_mulai' => $waktuMulai[$subKategoriId] ?? null,
-                'waktu_selesai' => $waktuSelesai[$subKategoriId] ?? null,
-                'saving_time' => $savingTime[$subKategoriId] ?? null,
+                'waktu_mulai' => $waktuMulai[$mataLombaId] ?? null,
+                'waktu_selesai' => $waktuSelesai[$mataLombaId] ?? null,
+                'saving_time' => $savingTime[$mataLombaId] ?? null,
+                'round' => $round[$mataLombaId] ?? null,
             ];
 
-            Log::debug("Constraint untuk sub_kategori_id {$subKategoriId}:", $constraint[$subKategoriId]);
+            Log::debug("Constraint untuk mata_lomba_id {$mataLombaId}:", $constraint[$mataLombaId]);
         }
+
+        // dd($constraint);
 
         // Simpan ke session
         session(['constraint_lomba' => $constraint]);
@@ -255,207 +870,497 @@ class PenjadwalanController extends Controller
         return $this->prosesJadwal($request);
     }
 
+
+
     public function switchJadwal($nama_jadwal, $tahun, $version)
     {
-        $jadwals = Jadwal::with(['subKategori', 'venue', 'peserta', 'juri'])
-            ->where('nama_jadwal', $nama_jadwal)
+        $jadwal = Jadwal::where('nama_jadwal', $nama_jadwal)
             ->where('tahun', $tahun)
             ->where('version', $version)
+            ->firstOrFail();
+
+        $jadwals = Agenda::select('agenda.*')
+            ->join('mata_lomba', 'agenda.mata_lomba_id', '=', 'mata_lomba.id')
+            ->join('venue', 'agenda.venue_id', '=', 'venue.id') // join venue
+            ->where('jadwal_id', $jadwal->id)
+            ->orderBy('tanggal') // urutkan tanggal dulu
+            ->orderBy('venue.name') // urutkan berdasarkan nama venue
+            ->orderBy('waktu_mulai') // urutkan berdasarkan jam mulai (pagi dulu)
+            ->with(['mataLomba', 'venue', 'peserta', 'juri', 'tim']) // relasi tetap diambil
             ->get();
 
-        // Dapatkan semua jadwal yang bisa dipilih untuk switch
-        $availableJadwals = Jadwal::with(['peserta'])
-            ->where('nama_jadwal', '!=', $nama_jadwal)
-            ->where('tahun', $tahun)
+        // Dapatkan semua agenda dari jadwal lain
+        $availableJadwals = Agenda::with(['peserta', 'mataLomba'])
+            ->where('jadwal_id', '!=', $jadwal->id)
+            ->whereHas('jadwal', function ($q) use ($tahun) {
+                $q->where('tahun', $tahun);
+            })
             ->get();
 
         return view('jadwal.switch', compact('jadwals', 'availableJadwals', 'nama_jadwal', 'tahun', 'version'));
     }
 
+
+
     public function createWithDetail($nama_jadwal, $tahun, $version)
     {
-        $sub_kategori = SubKategori::all();
-        $venue = Venue::all();
-        $peserta = Peserta::all();
-        $juri = Juri::all();
+        $jadwal = Jadwal::where('nama_jadwal', $nama_jadwal)->first();
 
-        return view('jadwal.add', compact('sub_kategori', 'venue', 'peserta', 'juri', 'nama_jadwal', 'tahun', 'version'));
+        // Ambil tanggal-tanggal unik dari semua agenda yang terhubung dengan jadwal ini
+        $tanggal_unik = [];
+
+        if ($jadwal) {
+            $tanggal_unik = Agenda::where('jadwal_id', $jadwal->id)
+                ->select(DB::raw('DISTINCT tanggal'))
+                ->orderBy('tanggal')
+                ->pluck('tanggal');
+        }
+
+        $mata_lomba = MataLomba::all();
+        $venue = Venue::all();
+        $peserta_ids = Membayar::where('status', 'Sudah Membayar')->pluck('peserta_id');
+        $peserta = Peserta::whereIn('id', $peserta_ids)->get();
+        $juri = Juri::all();
+        $tim = Tim::all();
+
+        return view('jadwal.add', compact(
+            'mata_lomba',
+            'venue',
+            'peserta',
+            'juri',
+            'tim',
+            'nama_jadwal',
+            'tahun',
+            'version',
+            'tanggal_unik'
+        ));
     }
 
     public function add(Request $request)
     {
         $request->validate([
-            'sub_kategori_id' => 'required|exists:sub_kategori,id',
+            'mata_lomba_id' => 'nullable|exists:mata_lomba,id',
             'waktu_mulai' => 'required|date_format:H:i',
             'waktu_selesai' => 'required|date_format:H:i|after:waktu_mulai',
-            'venue_id' => 'required|exists:venue,id',
-            'peserta_id' => 'required|exists:peserta,id',
-            'juri_id' => 'required|exists:juri,id',
+            'venue_id' => 'nullable|exists:venue,id',
+            'peserta_id' => 'nullable|array|min:1',
+            'peserta_id.*' => 'exists:peserta,id',
+            'tim_id' => 'nullable|array',
+            'tim_id.*' => 'exists:tim,id',
+            'juri_id' => 'nullable|exists:juri,id',
             'nama_jadwal' => 'required|string|max:255',
             'tahun' => 'required|integer',
+            'kegiatan' => 'nullable|string|max:1000',
             'version' => 'required|integer',
+            'tanggal' => 'required|date',
+            'force' => 'boolean',
         ]);
 
-        $force = $request->input('force', false);
+        $force = $request->boolean('force', false);
         $waktuMulai = $request->waktu_mulai;
         $waktuSelesai = $request->waktu_selesai;
+        $tanggal = $request->tanggal;
+        $venueId = $request->venue_id;
+        $mataLombaId = $request->mata_lomba_id;
+        $juriId = $request->juri_id;
 
-        $bentrokJadwal = Jadwal::where('venue_id', $request->venue_id)
-            ->where(function ($query) use ($waktuMulai, $waktuSelesai) {
-                $query->whereBetween('waktu_mulai', [$waktuMulai, $waktuSelesai])
-                    ->orWhereBetween('waktu_selesai', [$waktuMulai, $waktuSelesai])
-                    ->orWhere(function ($q) use ($waktuMulai, $waktuSelesai) {
-                        $q->where('waktu_mulai', '<=', $waktuMulai)
-                            ->where('waktu_selesai', '>=', $waktuSelesai);
-                    });
+        // Ambil peserta langsung dan peserta tim
+        $pesertaLangsung = $request->peserta_id ?? [];
+        $pesertaTim = [];
+        if ($request->tim_id) {
+            $pesertaTim = \App\Models\Bergabung::whereIn('tim_id', $request->tim_id)
+                ->pluck('peserta_id')
+                ->unique()
+                ->toArray();
+        }
+        $allPesertaId = array_unique(array_merge($pesertaLangsung, $pesertaTim));
+
+        // Buat atau ambil jadwal
+        $jadwal = Jadwal::firstOrCreate(
+            ['nama_jadwal' => $request->nama_jadwal, 'tahun' => $request->tahun, 'version' => $request->version],
+            ['venue_id' => $request->venue_id]
+        );
+
+        // Fungsi cek waktu bentrok (dipakai di query)
+        $cekWaktu = function ($query) use ($waktuMulai, $waktuSelesai) {
+            $query->where(function ($q) use ($waktuMulai, $waktuSelesai) {
+                $q->where('waktu_mulai', '<', $waktuSelesai)
+                    ->where('waktu_selesai', '>', $waktuMulai);
+            });
+        };
+
+        // Cek bentrok venue
+        $bentrokVenueList = $venueId ? Agenda::with('mataLomba', 'venue')
+            ->where('jadwal_id', $jadwal->id)
+            ->where('venue_id', $venueId)
+            ->whereDate('tanggal', $tanggal)
+            ->where($cekWaktu)
+            ->get() : collect();
+
+        // Cek bentrok peserta
+        $bentrokPesertaList = !empty($allPesertaId) ? Agenda::with('mataLomba', 'peserta')
+            ->where('jadwal_id', $jadwal->id)
+            ->whereDate('tanggal', $tanggal)
+            ->where($cekWaktu)
+            ->whereHas('peserta', function ($query) use ($allPesertaId) {
+                $query->whereIn('peserta.id', $allPesertaId);
             })
-            ->exists();
+            ->get() : collect();
 
-        $bentrokPeserta = Jadwal::where('peserta_id', $request->peserta_id)
-            ->where(function ($query) use ($waktuMulai, $waktuSelesai) {
-                $query->whereBetween('waktu_mulai', [$waktuMulai, $waktuSelesai])
-                    ->orWhereBetween('waktu_selesai', [$waktuMulai, $waktuSelesai])
-                    ->orWhere(function ($q) use ($waktuMulai, $waktuSelesai) {
-                        $q->where('waktu_mulai', '<=', $waktuMulai)
-                            ->where('waktu_selesai', '>=', $waktuSelesai);
-                    });
+        // Cek bentrok tim (khusus kalau ingin tampilkan tim yang bentrok)
+        $bentrokTimList = !empty($pesertaTim) ? Agenda::with('mataLomba', 'tim')
+            ->where('jadwal_id', $jadwal->id)
+            ->whereDate('tanggal', $tanggal)
+            ->where($cekWaktu)
+            ->whereHas('tim.peserta', function ($query) use ($pesertaTim) {
+                $query->whereIn('peserta.id', $pesertaTim);
             })
-            ->exists();
+            ->get() : collect();
 
-        $bentrokJuri = Jadwal::where('juri_id', $request->juri_id)
-            ->where(function ($query) use ($waktuMulai, $waktuSelesai) {
-                $query->whereBetween('waktu_mulai', [$waktuMulai, $waktuSelesai])
-                    ->orWhereBetween('waktu_selesai', [$waktuMulai, $waktuSelesai])
-                    ->orWhere(function ($q) use ($waktuMulai, $waktuSelesai) {
-                        $q->where('waktu_mulai', '<=', $waktuMulai)
-                            ->where('waktu_selesai', '>=', $waktuSelesai);
-                    });
-            })
-            ->exists();
+        // Cek bentrok juri
+        $bentrokJuriList = $juriId ? Agenda::with('mataLomba')
+            ->where('jadwal_id', $jadwal->id)
+            ->where('juri_id', $juriId)
+            ->whereDate('tanggal', $tanggal)
+            ->where($cekWaktu)
+            ->get() : collect();
 
-        if (($bentrokJadwal || $bentrokPeserta || $bentrokJuri) && !$force) {
-            return back()->withInput()->with('error_force', 'Terjadi bentrok jadwal. Apakah Anda yakin ingin melanjutkan penambahan data?');
+        // Jika ada bentrok dan tidak force, tampilkan pesan error detail
+        if (
+            !$force && (
+                $bentrokVenueList->isNotEmpty() ||
+                $bentrokPesertaList->isNotEmpty() ||
+                $bentrokJuriList->isNotEmpty() ||
+                $bentrokTimList->isNotEmpty()
+            )
+        ) {
+            $detail = [];
+            foreach ($bentrokVenueList as $b) {
+                $detail[] = "Lomba {$b->mataLomba->nama_lomba} pada {$b->waktu_mulai}-{$b->waktu_selesai} di {$b->venue->name}";
+            }
+            foreach ($bentrokPesertaList as $b) {
+                dd($b->peserta);
+                $peserta = $b->peserta->pluck('nama_peserta')->implode(', ');
+                $detail[] = "Peserta {$peserta} pada lomba {$b->mataLomba->nama_lomba} {$b->waktu_mulai}-{$b->waktu_selesai}";
+            }
+            foreach ($bentrokJuriList as $b) {
+                $detail[] = "Juri pada lomba {$b->mataLomba->nama_lomba} {$b->waktu_mulai}-{$b->waktu_selesai}";
+            }
+            foreach ($bentrokTimList as $b) {
+                // dapatkan peserta tim dari agenda bentrok ini
+                $pesertaBentrok = $b->tim->flatMap(function ($tim) {
+                    return $tim->peserta->pluck('id');
+                })->unique()->toArray();
+
+                // cari irisan peserta bentrok dengan pesertaTim (peserta di tim utama)
+                $pesertaYangBentrok = array_intersect($pesertaTim, $pesertaBentrok);
+
+                // ambil nama tim yang ada peserta yang bentrok
+                $namaTimBentrok = $b->tim->filter(function ($tim) use ($pesertaYangBentrok) {
+                    $pesertaTimIni = $tim->peserta->pluck('id')->toArray();
+                    return count(array_intersect($pesertaTimIni, $pesertaYangBentrok)) > 0;
+                })->pluck('nama_tim')->implode(', ');
+
+                if ($namaTimBentrok) {
+                    $detail[] = "{$namaTimBentrok} pada lomba {$b->mataLomba->nama_lomba} {$b->waktu_mulai}-{$b->waktu_selesai}";
+                }
+            }
+
+            $pesan = "Terjadi bentrok:\n\n" . implode("\n", $detail);
+
+            return back()->withInput()->with('error_force', $pesan);
         }
 
-        // Jika tidak bentrok atau force == true, simpan data
-        Jadwal::create([
-            'sub_kategori_id' => $request->sub_kategori_id,
-            'waktu_mulai' => $request->waktu_mulai,
-            'waktu_selesai' => $request->waktu_selesai,
-            'venue_id' => $request->venue_id,
-            'peserta_id' => $request->peserta_id,
-            'juri_id' => $request->juri_id,
-            'nama_jadwal' => $request->nama_jadwal,
-            'tahun' => $request->tahun,
-            'version' => $request->version,
+        // Simpan agenda baru
+        $agendaBaru = Agenda::create([
+            'jadwal_id' => $jadwal->id,
+            'mata_lomba_id' => $mataLombaId,
+            'tanggal' => $tanggal,
+            'kegiatan' => $request->kegiatan,
+            'waktu_mulai' => $waktuMulai,
+            'waktu_selesai' => $waktuSelesai,
+            'venue_id' => $venueId,
+            'juri_id' => $juriId,
         ]);
 
-        return redirect()->route('jadwal.index')->with('success', 'Jadwal berhasil ditambahkan.');
+        // Simpan relasi peserta dan tim
+        $agendaBaru->peserta()->attach($request->peserta_id);
+        if ($request->filled('tim_id')) {
+            $agendaBaru->tim()->attach($request->tim_id);
+        }
+
+        // Jika bentrok tapi paksa force, kamu bisa tambahkan logic geser agenda seperti di update() atau seperti sebelumnya jika diperlukan
+        // Jika ada bentrok dan force, lakukan geser agenda bawahnya mirip add()
+        if ($force && ($bentrokVenueList->isNotEmpty() || $bentrokPesertaList->isNotEmpty() || $bentrokJuriList->isNotEmpty())) {
+            // Ambil semua agenda dalam jadwal, venue, tanggal, urut waktu mulai, kecuali agenda ini
+            $agendaSemua = Agenda::where('jadwal_id', $agendaBaru->jadwal_id)
+                ->where('venue_id', $venueId)
+                ->whereDate('tanggal', $tanggal)
+                ->where('id', '!=', $agendaBaru->id)
+                ->orderBy('waktu_mulai')
+                ->get();
+
+            // Cari index agenda pertama yang bentrok dengan agenda ini (baru diupdate)
+            $indexBentrokPertama = $agendaSemua->search(function ($a) use ($waktuMulai, $waktuSelesai) {
+                $start1 = strtotime($a->waktu_mulai);
+                $end1 = strtotime($a->waktu_selesai);
+                $start2 = strtotime($waktuMulai);
+                $end2 = strtotime($waktuSelesai);
+                return !($end1 <= $start2 || $start1 >= $end2); // true kalau bentrok
+            });
+
+            if ($indexBentrokPertama !== false) {
+                // Slice agenda bentrok dan setelahnya
+                $agendaTerdampak = $agendaSemua->slice($indexBentrokPertama)->values();
+
+                // Mulai geser dari waktu selesai agenda ini (yang baru diupdate)
+                $waktuSelesaiBaru = Carbon::createFromFormat('H:i', $waktuSelesai);
+
+                foreach ($agendaTerdampak as $agendaItem) {
+                    $waktuMulaiLama = Carbon::createFromFormat('H:i:s', $agendaItem->waktu_mulai);
+                    $waktuSelesaiLama = Carbon::createFromFormat('H:i:s', $agendaItem->waktu_selesai);
+                    $durasiAgenda = $waktuMulaiLama->diffInMinutes($waktuSelesaiLama);
+
+                    $waktuMulaiBaru = $waktuSelesaiBaru->copy();
+                    $waktuSelesaiBaru = $waktuMulaiBaru->copy()->addMinutes($durasiAgenda);
+
+                    \Log::info('Geser agenda ID ' . $agendaItem->id, [
+                        'waktu_mulai_lama' => $waktuMulaiLama->format('H:i:s'),
+                        'waktu_selesai_lama' => $waktuSelesaiLama->format('H:i:s'),
+                        'waktu_mulai_baru' => $waktuMulaiBaru->format('H:i'),
+                        'waktu_selesai_baru' => $waktuSelesaiBaru->format('H:i'),
+                    ]);
+
+                    $agendaItem->update([
+                        'waktu_mulai' => $waktuMulaiBaru->format('H:i'),
+                        'waktu_selesai' => $waktuSelesaiBaru->format('H:i'),
+                    ]);
+                }
+            }
+        }
+
+        $jadwal = $agendaBaru->jadwal;
+
+        return redirect()->route('jadwal.change', ['id' => $jadwal->id])->with('success', 'Agenda berhasil ditambahkan.');
     }
+
 
     public function prosesSwitch(Request $request)
     {
-        $selectedIds = $request->input('selected_ids', []);
-
+        $selectedIds = $request->input('switch_ids', []);
         Log::info('Switch request initiated', ['selected_ids' => $selectedIds]);
 
         if (count($selectedIds) !== 2) {
-            Log::warning('Jumlah jadwal yang dipilih tidak sama dengan 2');
-            return redirect()->back()->with('error', 'Anda harus memilih tepat 2 jadwal untuk ditukar.');
+            return redirect()->back()->with('error', 'Anda harus memilih tepat 2 agenda untuk ditukar.');
         }
 
         [$id1, $id2] = $selectedIds;
-        $jadwal1 = Jadwal::with('peserta', 'juri')->find($id1);
-        $jadwal2 = Jadwal::with('peserta', 'juri')->find($id2);
+        $agenda1 = Agenda::with('peserta', 'juri', 'mataLomba', 'venue')->find($id1);
+        $agenda2 = Agenda::with('peserta', 'juri', 'mataLomba', 'venue')->find($id2);
 
-        Log::info('Jadwal ditemukan', [
-            'jadwal1' => $jadwal1,
-            'jadwal2' => $jadwal2
-        ]);
-
-        if (!$jadwal1 || !$jadwal2) {
-            Log::error('Salah satu jadwal tidak ditemukan', compact('jadwal1', 'jadwal2'));
-            return redirect()->back()->with('error', 'Jadwal tidak ditemukan.');
+        if (!$agenda1 || !$agenda2) {
+            return redirect()->back()->with('error', 'Agenda tidak ditemukan.');
         }
 
-        // Pengecekan bentrok peserta dan juri
-        $conflict1 = Jadwal::where('id', '!=', $jadwal1->id)
-            ->where(function ($q) use ($jadwal1, $jadwal2) {
-                $q->where('peserta_id', $jadwal1->peserta_id);
-
-                // Juri dicek hanya jika nama_jadwal berbeda
-                if ($jadwal1->sub_kategori_id !== $jadwal2->sub_kategori_id) {
-                    $q->orWhere('juri_id', $jadwal1->juri_id);
-                }
-            })
-            ->where(function ($q) use ($jadwal2) {
-                $q->whereBetween('waktu_mulai', [$jadwal2->waktu_mulai, $jadwal2->waktu_selesai])
-                    ->orWhereBetween('waktu_selesai', [$jadwal2->waktu_mulai, $jadwal2->waktu_selesai]);
-            })->exists();
-
-        $conflict2 = Jadwal::where('id', '!=', $jadwal2->id)
-            ->where(function ($q) use ($jadwal1, $jadwal2) {
-                $q->where('peserta_id', $jadwal2->peserta_id);
-
-                // Juri dicek hanya jika nama_jadwal berbeda
-                if ($jadwal1->sub_kategori_id !== $jadwal2->sub_kategori_id) {
-                    $q->orWhere('juri_id', $jadwal2->juri_id);
-                }
-            })
-            ->where(function ($q) use ($jadwal1) {
-                $q->whereBetween('waktu_mulai', [$jadwal1->waktu_mulai, $jadwal1->waktu_selesai])
-                    ->orWhereBetween('waktu_selesai', [$jadwal1->waktu_mulai, $jadwal1->waktu_selesai]);
-            })->exists();
-
-        Log::info('Hasil pengecekan konflik', [
-            'conflict1' => $conflict1,
-            'conflict2' => $conflict2,
-        ]);
-
-        if ($conflict1 || $conflict2) {
-            $detail = [];
-            if ($conflict1)
-                $detail[] = "Peserta/Juri pada jadwal pertama bentrok jika ditukar.";
-            if ($conflict2)
-                $detail[] = "Peserta/Juri pada jadwal kedua bentrok jika ditukar.";
-
-            Log::warning('Terdapat bentrok saat proses switch', $detail);
-            return redirect()->back()->with('error', 'Terdapat bentrok: ' . implode(' ', $detail));
+        // ❗ Tolak jika venue beda
+        if ($agenda1->venue_id !== $agenda2->venue_id) {
+            return redirect()->back()->with('error', 'Agenda hanya bisa ditukar jika berada di venue yang sama.');
         }
 
-        Log::info('Sebelum switch', [
-            'jadwal1_mulai' => $jadwal1->waktu_mulai,
-            'jadwal1_selesai' => $jadwal1->waktu_selesai,
-            'jadwal2_mulai' => $jadwal2->waktu_mulai,
-            'jadwal2_selesai' => $jadwal2->waktu_selesai,
-        ]);
+        $conflicts = [];
 
-        DB::transaction(function () use ($jadwal1, $jadwal2) {
-            [$jadwal1->waktu_mulai, $jadwal2->waktu_mulai] = [$jadwal2->waktu_mulai, $jadwal1->waktu_mulai];
-            [$jadwal1->waktu_selesai, $jadwal2->waktu_selesai] = [$jadwal2->waktu_selesai, $jadwal1->waktu_selesai];
+        // ❗ Cek bentrok peserta
+        $jadwalId1 = $agenda1->jadwal_id;
+        $jadwalId2 = $agenda2->jadwal_id;
 
-            $jadwal1->save();
-            $jadwal2->save();
-        });
+        $peserta1 = $agenda1->peserta->pluck('id');
+        $pesertaBentrok1 = Agenda::with('mataLomba')->where('id', '!=', $agenda1->id)
+            ->where('jadwal_id', $jadwalId1)
+            ->whereHas('peserta', function ($q) use ($peserta1) {
+                $q->whereIn('peserta_id', $peserta1);
+            })
+            ->where(function ($q) use ($agenda2) {
+                $q->whereBetween('waktu_mulai', [$agenda2->waktu_mulai, $agenda2->waktu_selesai])
+                    ->orWhereBetween('waktu_selesai', [$agenda2->waktu_mulai, $agenda2->waktu_selesai])
+                    ->orWhere(function ($q2) use ($agenda2) {
+                        $q2->where('waktu_mulai', '<=', $agenda2->waktu_mulai)
+                            ->where('waktu_selesai', '>=', $agenda2->waktu_selesai);
+                    });
+            })->first();
 
-        Log::info('Berhasil tukar waktu jadwal', [
-            'jadwal1_new_mulai' => $jadwal1->waktu_mulai,
-            'jadwal1_new_selesai' => $jadwal1->waktu_selesai,
-            'jadwal2_new_mulai' => $jadwal2->waktu_mulai,
-            'jadwal2_new_selesai' => $jadwal2->waktu_selesai,
-        ]);
+        if ($pesertaBentrok1) {
+            foreach ($agenda1->peserta as $peserta) {
+                if ($pesertaBentrok1->peserta->pluck('id')->contains($peserta->id)) {
+                    $conflicts[] = "{$peserta->nama_peserta} bentrok di waktu " .
+                        Carbon::parse($agenda2->waktu_mulai)->format('H:i') . " - " .
+                        Carbon::parse($agenda2->waktu_selesai)->format('H:i') .
+                        " pada Lomba {$pesertaBentrok1->mataLomba->nama_lomba} di waktu " .
+                        Carbon::parse($pesertaBentrok1->waktu_mulai)->format('H:i') . " - " .
+                        Carbon::parse($pesertaBentrok1->waktu_selesai)->format('H:i') . ".";
+                }
+            }
+        }
 
-        return redirect()->route('jadwal.index')->with('success', 'Waktu mulai dan selesai berhasil ditukar.');
+        $peserta2 = $agenda2->peserta->pluck('id');
+        $pesertaBentrok2 = Agenda::with('mataLomba')->where('id', '!=', $agenda2->id)
+            ->where('jadwal_id', $jadwalId2)
+            ->whereHas('peserta', function ($q) use ($peserta2) {
+                $q->whereIn('peserta_id', $peserta2);
+            })
+            ->where(function ($q) use ($agenda1) {
+                $q->whereBetween('waktu_mulai', [$agenda1->waktu_mulai, $agenda1->waktu_selesai])
+                    ->orWhereBetween('waktu_selesai', [$agenda1->waktu_mulai, $agenda1->waktu_selesai])
+                    ->orWhere(function ($q2) use ($agenda1) {
+                        $q2->where('waktu_mulai', '<=', $agenda1->waktu_mulai)
+                            ->where('waktu_selesai', '>=', $agenda1->waktu_selesai);
+                    });
+            })->first();
+
+        if ($pesertaBentrok2) {
+            foreach ($agenda2->peserta as $peserta) {
+                if ($pesertaBentrok2->peserta->pluck('id')->contains($peserta->id)) {
+                    $conflicts[] = "{$peserta->nama_peserta} bentrok di waktu " .
+                        Carbon::parse($agenda1->waktu_mulai)->format('H:i') . " - " .
+                        Carbon::parse($agenda1->waktu_selesai)->format('H:i') .
+                        " pada Lomba {$pesertaBentrok2->mataLomba->nama_lomba} di waktu " .
+                        Carbon::parse($pesertaBentrok2->waktu_mulai)->format('H:i') . " - " .
+                        Carbon::parse($pesertaBentrok2->waktu_selesai)->format('H:i') . ".";
+
+                }
+            }
+        }
+
+        // ❗ Cek bentrok tim
+        $tim1 = $agenda1->tim->pluck('id');
+        $timBentrok1 = Agenda::with('mataLomba')->where('id', '!=', $agenda1->id)
+            ->where('jadwal_id', $jadwalId1)
+            ->whereHas('tim', function ($q) use ($tim1) {
+                $q->whereIn('tim_id', $tim1);
+            })
+            ->where(function ($q) use ($agenda2) {
+                $q->whereBetween('waktu_mulai', [$agenda2->waktu_mulai, $agenda2->waktu_selesai])
+                    ->orWhereBetween('waktu_selesai', [$agenda2->waktu_mulai, $agenda2->waktu_selesai])
+                    ->orWhere(function ($q2) use ($agenda2) {
+                        $q2->where('waktu_mulai', '<=', $agenda2->waktu_mulai)
+                            ->where('waktu_selesai', '>=', $agenda2->waktu_selesai);
+                    });
+            })->first();
+
+        if ($timBentrok1) {
+            foreach ($agenda1->tim as $tim) {
+                if ($timBentrok1->tim->pluck('id')->contains($tim->id)) {
+                    $conflicts[] = "{$tim->nama_tim} bentrok di waktu " .
+                        Carbon::parse($agenda2->waktu_mulai)->format('H:i') . " - " .
+                        Carbon::parse($agenda2->waktu_selesai)->format('H:i') .
+                        " pada Lomba {$timBentrok1->mataLomba->nama_lomba} di waktu " .
+                        Carbon::parse($timBentrok1->waktu_mulai)->format('H:i') . " - " .
+                        Carbon::parse($timBentrok1->waktu_selesai)->format('H:i') . ".";
+                }
+            }
+        }
+
+        $tim2 = $agenda2->tim->pluck('id');
+        $timBentrok2 = Agenda::with('mataLomba')->where('id', '!=', $agenda2->id)
+            ->where('jadwal_id', $jadwalId2)
+            ->whereHas('tim', function ($q) use ($tim2) {
+                $q->whereIn('tim_id', $tim2);
+            })
+            ->where(function ($q) use ($agenda1) {
+                $q->whereBetween('waktu_mulai', [$agenda1->waktu_mulai, $agenda1->waktu_selesai])
+                    ->orWhereBetween('waktu_selesai', [$agenda1->waktu_mulai, $agenda1->waktu_selesai])
+                    ->orWhere(function ($q2) use ($agenda1) {
+                        $q2->where('waktu_mulai', '<=', $agenda1->waktu_mulai)
+                            ->where('waktu_selesai', '>=', $agenda1->waktu_selesai);
+                    });
+            })->first();
+
+        if ($timBentrok2) {
+            foreach ($agenda2->tim as $tim) {
+                if ($timBentrok2->tim->pluck('id')->contains($tim->id)) {
+                    $conflicts[] = "{$tim->nama_tim} bentrok di waktu " .
+                        Carbon::parse($agenda1->waktu_mulai)->format('H:i') . " - " .
+                        Carbon::parse($agenda1->waktu_selesai)->format('H:i') .
+                        " pada Lomba {$timBentrok2->mataLomba->nama_lomba} di waktu " .
+                        Carbon::parse($timBentrok2->waktu_mulai)->format('H:i') . " - " .
+                        Carbon::parse($timBentrok2->waktu_selesai)->format('H:i') . ".";
+                }
+            }
+        }
+
+
+        // ❗ Cek bentrok juri
+        if ($agenda1->juri_id) {
+            $juriBentrok1 = Agenda::with('mataLomba')->where('id', '!=', $agenda1->id)
+                ->where('jadwal_id', $jadwalId1)
+                ->where('juri_id', $agenda1->juri_id)
+                ->where(function ($q) use ($agenda2) {
+                    $q->whereBetween('waktu_mulai', [$agenda2->waktu_mulai, $agenda2->waktu_selesai])
+                        ->orWhereBetween('waktu_selesai', [$agenda2->waktu_mulai, $agenda2->waktu_selesai])
+                        ->orWhere(function ($q2) use ($agenda2) {
+                            $q2->where('waktu_mulai', '<=', $agenda2->waktu_mulai)
+                                ->where('waktu_selesai', '>=', $agenda2->waktu_selesai);
+                        });
+                })->first();
+
+            if ($juriBentrok1) {
+                $conflicts[] = "Juri {$agenda1->juri->nama} bentrok di waktu {$agenda2->waktu_mulai->format('H:i')} - {$agenda2->waktu_selesai->format('H:i')} pada Lomba {$juriBentrok1->mataLomba->nama_lomba}.";
+            }
+        }
+
+        if ($agenda2->juri_id) {
+            $juriBentrok2 = Agenda::with('mataLomba')->where('id', '!=', $agenda2->id)
+                ->where('jadwal_id', $jadwalId2)
+                ->where('juri_id', $agenda2->juri_id)
+                ->where(function ($q) use ($agenda1) {
+                    $q->whereBetween('waktu_mulai', [$agenda1->waktu_mulai, $agenda1->waktu_selesai])
+                        ->orWhereBetween('waktu_selesai', [$agenda1->waktu_mulai, $agenda1->waktu_selesai])
+                        ->orWhere(function ($q2) use ($agenda1) {
+                            $q2->where('waktu_mulai', '<=', $agenda1->waktu_mulai)
+                                ->where('waktu_selesai', '>=', $agenda1->waktu_selesai);
+                        });
+                })->first();
+
+            if ($juriBentrok2) {
+                $conflicts[] = "Juri {$agenda2->juri->nama} bentrok di waktu {$agenda1->waktu_mulai->format('H:i')} - {$agenda1->waktu_selesai->format('H:i')} pada Lomba {$juriBentrok2->mataLomba->nama_lomba}.";
+            }
+        }
+
+        // if (!empty($conflicts)) {
+        //     $pesan = "Terjadi bentrok:\n\n" . implode("\n", $conflicts);
+        //     return back()->withInput()->with('error_force', $pesan);
+        // }
+
+        if (!$request->filled('force_switch') && count($conflicts) > 0) {
+            $message = implode("Terjadi bentrok:\n\n", $conflicts);
+            return redirect()->back()
+                ->withInput()
+                ->with('error_force', $message);
+        }
+
+        // ✅ Proses tukar waktu
+        $tempMulai = $agenda1->waktu_mulai;
+        $tempSelesai = $agenda1->waktu_selesai;
+
+        $agenda1->waktu_mulai = $agenda2->waktu_mulai;
+        $agenda1->waktu_selesai = $agenda2->waktu_selesai;
+        $agenda1->save();
+
+        $agenda2->waktu_mulai = $tempMulai;
+        $agenda2->waktu_selesai = $tempSelesai;
+        $agenda2->save();
+
+        return redirect()->route('jadwal.change', ['id' => $agenda1->jadwal_id])
+            ->with('success', 'Waktu agenda berhasil ditukar tanpa bentrok.');
     }
 
 
 
-
-    public function constraintPropagation($startTime, $endTime, $variabelX, $pesertaKategori)
+    public function constraintPropagation($variabelX, $constraintTambahan, $jadwalHarian)
     {
+
+        Log::info("=== Mulai proses constraint Propagation ===");
+        Log::info("Constraint propagation sekarang: " . json_encode($constraintTambahan));
         $domain = [];
-        $constraints = session('constraint_lomba', []);
-        $jadwalHarian = session('jadwal_harian', []);
 
         foreach ($variabelX as $var) {
             $kategoriLomba = $var['kategori_lomba'];
@@ -464,51 +1369,85 @@ class PenjadwalanController extends Controller
 
             // Log::info("=== Mulai proses kategori lomba: $kategoriLomba ===");
 
-            $subKategori = SubKategori::where('name_lomba', $kategoriLomba)->first();
-            if (!$subKategori) {
-                Log::warning("SubKategori tidak ditemukan untuk lomba: $kategoriLomba");
+            $mataLomba = MataLomba::where('nama_lomba', $kategoriLomba)->first();
+            if (!$mataLomba) {
+                // Log::warning("MataLomba tidak ditemukan untuk lomba: $kategoriLomba");
                 continue;
             }
 
-            $subKategoriId = $subKategori->id;
-            $venueId = $subKategori->venue_id;
+            $mataLombaId = $mataLomba->id;
+            $venueId = $mataLomba->venue_id;
             if (!$venueId) {
                 $randomVenue = Venue::inRandomOrder()->first();
                 $venueId = $randomVenue?->id;
-                // Log::warning("SubKategori $kategoriLomba tidak memiliki venue_id, memilih venue acak: " . ($venueId ?? 'none'));
+                // Log::warning("MataLomba $kategoriLomba tidak memiliki venue_id, memilih venue acak: " . ($venueId ?? 'none'));
             }
 
-            $durasi = $subKategori->durasi ?? 30;
+            $durasi = $mataLomba->durasi ?? 30;
             $savingTime = 0;
 
-            $constraint = $constraints[$subKategoriId] ?? null;
-            if ($constraint && isset($constraint['saving_time']) && is_numeric($constraint['saving_time'])) {
-                $savingTime = (int) $constraint['saving_time'];
+            $constraintSubKategori = $constraintTambahan[$mataLombaId] ?? null;
+            if ($constraintSubKategori && isset($constraintSubKategori['saving_time']) && is_numeric($constraintSubKategori['saving_time'])) {
+                $savingTime = (int) $constraintSubKategori['saving_time'];
             }
 
             $allSlots = [];
+
+            Log::debug('Jadwal harian:', $jadwalHarian);
+
             foreach ($jadwalHarian as $jadwal) {
+                Log::debug('Proses jadwal:', $jadwal);
                 $tanggal = $jadwal['tanggal'];
                 $mulai = $jadwal['waktu_mulai'];
                 $selesai = $jadwal['waktu_selesai'];
 
                 $startDateTime = Carbon::parse("$tanggal $mulai");
                 $endDateTime = Carbon::parse("$tanggal $selesai");
+                // Log::debug("Start: $startDateTime, End: $endDateTime");
 
                 $slots = $this->generateTimeSlots($startDateTime, $endDateTime, $durasi, $savingTime);
+
+                Log::debug("Slot yang dihasilkan:", $slots);
 
                 $allSlots = array_merge($allSlots, $slots);
             }
 
-            // Log::debug("Total slot yang dihasilkan: " . count($allSlots));
+            Log::debug("Total slot yang dihasilkan: " . count($allSlots));
 
-            $filteredSlots = $this->filterSlotsByConstraint($allSlots, $constraint);
-            // Log::info("Jumlah slot setelah filter constraint: " . count($filteredSlots));
-            // Log::debug("Detail slot setelah filter constraint:", $filteredSlots);
+            Log::info("Memulai filter slot untuk $mataLomba");
+            Log::info("Constraint tambahan untuk slot sekarang: " . json_encode($constraintSubKategori));
 
-            // buat key tergantung tim atau individu
-            if ($namaTim) {
-                // domain untuk tim: satu key per tim
+
+            $filteredSlots = $this->filterSlotsByConstraint($allSlots, $constraintSubKategori);
+            Log::info("Jumlah slot setelah filter constraint: " . count($filteredSlots));
+
+            if (count($filteredSlots) == 0) {
+                $filteredSlots = $allSlots;
+            }
+
+            Log::debug("Detail slot sekarang:" . count($filteredSlots));
+
+            $isSerentak = $mataLomba->is_serentak;
+
+            if ($isSerentak) {
+                // Key sama untuk semua peserta di kategori yang is_serentak
+                $key = $kategoriLomba;
+                $domain[$key] = [];
+
+                foreach ($filteredSlots as $slot) {
+                    $domain[$key][] = [
+                        'tanggal' => $slot['tanggal'],
+                        'waktu_mulai' => $slot['waktu_mulai'],
+                        'waktu_selesai' => $slot['waktu_selesai'],
+                        'kategori_lomba' => $kategoriLomba,
+                        'venue' => $venueId,
+                        'peserta' => $anggotaList,
+                        'nama_tim' => $namaTim,
+                    ];
+                }
+
+            } elseif ($namaTim) {
+                // Non-serentak: key per tim
                 $key = $kategoriLomba . '-' . $namaTim;
                 $domain[$key] = [];
 
@@ -519,13 +1458,12 @@ class PenjadwalanController extends Controller
                         'waktu_selesai' => $slot['waktu_selesai'],
                         'kategori_lomba' => $kategoriLomba,
                         'venue' => $venueId,
-                        'peserta' => $anggotaList, // array anggota tim
+                        'peserta' => $anggotaList,
                     ];
                 }
 
-                // Log::info("Tim $namaTim pada kategori $kategoriLomba mendapatkan " . count($domain[$key]) . " slot.");
             } else {
-                // domain untuk peserta individu: key per nim
+                // Non-serentak: individu, key per nim
                 foreach ($anggotaList as $nim) {
                     $key = $kategoriLomba . '-' . $nim;
                     $domain[$key] = [];
@@ -537,39 +1475,45 @@ class PenjadwalanController extends Controller
                             'waktu_selesai' => $slot['waktu_selesai'],
                             'kategori_lomba' => $kategoriLomba,
                             'venue' => $venueId,
-                            'peserta' => [$nim], // satu anggota dalam array supaya konsisten
+                            'peserta' => [$nim],
                         ];
                     }
-
-                    // Log::info("Peserta $nim pada kategori $kategoriLomba mendapatkan " . count($domain[$key]) . " slot.");
                 }
             }
+
         }
 
+        Log::info("Selesai constraint propagation");
+
+        // dd($domain);
         return $domain;
     }
 
 
-    private function filterSlotsByConstraint(array $slots, ?array $constraint): array
+    private function filterSlotsByConstraint(array $slots, ?array $constraintTambahan): array
     {
-        if (!$constraint) {
+        if (!$constraintTambahan) {
             // Log::debug("Tidak ada constraint, semua slot dikembalikan.");
             return $slots;
         }
 
-        $hariConstraint = $constraint['hari'] ?? null; // ['Monday', 'Wednesday']
-        $waktuMulaiConstraint = $constraint['waktu_mulai'] ?? null;
-        $waktuSelesaiConstraint = $constraint['waktu_selesai'] ?? null;
+        $hariConstraint = $constraintTambahan['hari'] ?? null; // ['Monday', 'Wednesday']
+        $waktuMulaiConstraint = $constraintTambahan['waktu_mulai'] ?? null;
+        $waktuSelesaiConstraint = $constraintTambahan['waktu_selesai'] ?? null;
 
-        // Log::debug("Memulai filter slot dengan constraint: hari=" . json_encode($hariConstraint) . ", mulai=$waktuMulaiConstraint, selesai=$waktuSelesaiConstraint");
+        Log::debug("Memulai filter slot dengan constraint: hari=" . json_encode($hariConstraint) . ", mulai=$waktuMulaiConstraint, selesai=$waktuSelesaiConstraint");
 
         $filtered = [];
 
         foreach ($slots as $index => $slot) {
+            // Log::debug("Slot ke-$index sebelum parse: waktu_mulai = {$slot['waktu_mulai']}, waktu_selesai = {$slot['waktu_selesai']}");
+
             $slotStart = Carbon::parse($slot['waktu_mulai']);
             $slotEnd = Carbon::parse($slot['waktu_selesai']);
 
-            $slotDate = Carbon::parse($slot['waktu_mulai'])->format('Y-m-d');
+            // $slotDate = Carbon::parse($slot['waktu_mulai'])->format('Y-m-d');
+
+            $slotDate = $slot['tanggal'];
 
             $startTime = $slotStart->format('H:i');
             $endTime = $slotEnd->format('H:i');
@@ -630,23 +1574,6 @@ class PenjadwalanController extends Controller
         return $slots;
     }
 
-    public function prosesJadwal(Request $request)
-    {
-        Log::info("Memanggil prosesJadwal");
-        
-        $startTime = session('jadwal_waktu_mulai', '08:00');
-        $endTime = session('jadwal_waktu_selesai', '17:00');
-        $variabelX = $this->processPesertaKategoriLomba();
-        $pesertaKategori = $variabelX;
-
-        ProsesPenjadwalanJob::dispatch($startTime, $endTime, $variabelX, $pesertaKategori);
-
-        return response()->json([
-            'status' => 'success',
-            'message' => 'Penjadwalan sedang diproses di background.',
-        ]);
-
-    }
 
 
     // public function prosesJadwal(Request $request)
@@ -684,16 +1611,16 @@ class PenjadwalanController extends Controller
     //                 $timId = $tim?->id;
     //             }
 
-    //             $subKategori = SubKategori::where('name_lomba', $jadwal['kategori_lomba'])->first();
+    //             $mataLomba = MataLomba::where('nama_lomba', $jadwal['kategori_lomba'])->first();
 
     //             Jadwal::create([
     //                 'nama_jadwal' => session('jadwal_nama', 'Jadwal Otomatis'),
     //                 'tahun' => now()->year,
     //                 'tanggal' => $jadwal['tanggal'],
-    //                 'sub_kategori_id' => $subKategori->id ?? null,
+    //                 'mata_lomba_id' => $mataLomba->id ?? null,
     //                 'waktu_mulai' => $jadwal['waktu_mulai'],
     //                 'waktu_selesai' => $jadwal['waktu_selesai'],
-    //                 'venue_id' => $subKategori->venue_id ?? null,
+    //                 'venue_id' => $mataLomba->venue_id ?? null,
     //                 'peserta_id' => $pesertaId ?? null,
     //                 'tim_id' => $timId ?? null,
     //                 'juri_id' => $juri->id ?? null,
@@ -721,84 +1648,228 @@ class PenjadwalanController extends Controller
     // }
 
 
-    public function backtrack($domain)
+    // public function backtrack($domain)
+    // {
+    //     Log::info("Memulai proses backtracking");
+    //     // Log::debug("Domain awal:", $domain);
+    //     $kategoriKeys = array_keys($domain);
+    //     $solution = [];
+
+    //     $backtrackRecursive = function ($depth) use (&$backtrackRecursive, $domain, $kategoriKeys, &$solution) {
+    //         if ($depth === count($kategoriKeys)) {
+    //             // Log::info("Solusi lengkap ditemukan!");
+    //             return true;
+    //         }
+
+    //         $currentKey = $kategoriKeys[$depth];
+    //         $slots = $domain[$currentKey];
+
+    //         // Log::debug("Depth $depth | Proses key: $currentKey | Total slot tersedia: " . count($slots));
+
+    //         foreach ($slots as $index => $slot) {
+    //             // Log::debug("Coba slot ke-$index: peserta [" . implode(',', $slot['peserta']) . "] | lomba {$slot['kategori_lomba']} | waktu {$slot['waktu_mulai']} - {$slot['waktu_selesai']} | venue_id {$slot['venue']}");
+
+    //             if ($this->checkConstraint($slot, $solution)) {
+    //                 // Log::debug("Slot konsisten. Menambahkan ke solusi.");
+    //                 $solution[] = $slot;
+
+    //                 if ($backtrackRecursive($depth + 1)) {
+    //                     return true;
+    //                 }
+
+    //                 // Log::debug("Backtrack: menghapus slot terakhir dari solusi.");
+    //                 array_pop($solution);
+    //             } else {
+    //                 // Log::debug("Slot tidak konsisten. Lewati.");
+    //             }
+    //         }
+
+    //         // Log::debug("Tidak ada slot valid pada depth $depth untuk key $currentKey");
+    //         return false;
+    //     };
+
+    //     if ($backtrackRecursive(0)) {
+    //         Log::info("Proses backtracking berhasil. Solusi akhir:");
+    //         // Log::info($solution);
+    //         return $solution;
+    //     }
+
+    //     Log::warning("Backtracking gagal: tidak ditemukan solusi valid.");
+    //     return null;
+    // }
+
+    public function backtrack($domain, $maxSolutions = 3)
     {
+        Log::info("Memulai proses backtracking (multi solusi)");
+
         $kategoriKeys = array_keys($domain);
-        $solution = [];
+        $solutions = [];
 
-        $backtrackRecursive = function ($depth) use (&$backtrackRecursive, $domain, $kategoriKeys, &$solution) {
-            if ($depth === count($kategoriKeys)) {
-                // Log::info("Solusi lengkap ditemukan!");
-                return true;
-            }
+        for ($attempt = 0; $attempt < $maxSolutions; $attempt++) {
+            // Copy domain agar tiap versi punya acakan berbeda
+            $shuffledDomain = $domain;
 
-            $currentKey = $kategoriKeys[$depth];
-            $slots = $domain[$currentKey];
+            // Ambil dan acak urutan kategori
+            $kategoriKeys = array_keys($shuffledDomain);
+            shuffle($kategoriKeys); // ✅ acak urutan kategori
 
-            // Log::debug("Depth $depth | Proses key: $currentKey | Total slot tersedia: " . count($slots));
+            // $kategoriKeys = array_keys($shuffledDomain);
+            // usort($kategoriKeys, function ($a, $b) {
+            //     return strcmp(explode('-', $a)[0], explode('-', $b)[0]);
+            // });
 
-            foreach ($slots as $index => $slot) {
-                // Log::debug("Coba slot ke-$index: peserta [" . implode(',', $slot['peserta']) . "] | lomba {$slot['kategori_lomba']} | waktu {$slot['waktu_mulai']} - {$slot['waktu_selesai']} | venue_id {$slot['venue']}");
+            // Acak nilai-nilai dalam setiap kategori
+            // foreach ($kategoriKeys as $key) {
+            //     shuffle($shuffledDomain[$key]); // ✅ acak isi kategori
+            // }
 
-                if ($this->checkConstraint($slot, $solution)) {
-                    // Log::debug("Slot konsisten. Menambahkan ke solusi.");
-                    $solution[] = $slot;
+            $currentSolution = [];
 
-                    if ($backtrackRecursive($depth + 1)) {
-                        return true;
-                    }
+            $backtrackRecursive = function ($depth, &$currentSolution) use (&$backtrackRecursive, $shuffledDomain, $kategoriKeys, &$solutions) {
+                if ($depth === count($kategoriKeys)) {
+                    $solutions[] = $currentSolution;
 
-                    // Log::debug("Backtrack: menghapus slot terakhir dari solusi.");
-                    array_pop($solution);
-                } else {
-                    // Log::debug("Slot tidak konsisten. Lewati.");
+                    // Log solusi saat ini
+                    $versionNumber = count($solutions);
+                    Log::info("Solusi ke-{$versionNumber}: " . json_encode($currentSolution));
+
+                    return true; // satu solusi ditemukan
                 }
-            }
 
-            // Log::debug("Tidak ada slot valid pada depth $depth untuk key $currentKey");
-            return false;
-        };
+                $currentKey = $kategoriKeys[$depth];
+                $slots = $shuffledDomain[$currentKey];
 
-        if ($backtrackRecursive(0)) {
-            // Log::info("Proses backtracking berhasil. Solusi akhir:");
-            // Log::info($solution);
-            return $solution;
+                foreach ($slots as $slot) {
+                    $remainingKeys = array_slice($kategoriKeys, $depth + 1);
+
+                    if (
+                        $this->checkConstraint($slot, $currentSolution)
+                    ) {
+                        $currentSolution[] = $slot;
+                        if ($backtrackRecursive($depth + 1, $currentSolution)) {
+                            return true;
+                        }
+                        array_pop($currentSolution);
+                    }
+                }
+
+                return false;
+            };
+
+            $backtrackRecursive(0, $currentSolution);
         }
 
-        // Log::warning("Backtracking gagal: tidak ditemukan solusi valid.");
-        return null;
+        if (count($solutions) > 0) {
+            Log::info("Backtracking berhasil menemukan " . count($solutions) . " solusi.");
+            return $solutions;
+        }
+
+        $penyebab = $this->analisaKegagalan($domain);
+        Log::warning("Backtracking gagal: $penyebab");
+
+        return ['error' => $penyebab];
+    }
+    private function analisaKegagalan($domain)
+    {
+        $logDetail = [];
+
+        foreach ($domain as $kategori => $slots) {
+            if (count($slots) === 0) {
+                $logDetail[] = "❌ Kategori \"$kategori\" tidak memiliki slot valid sama sekali.";
+            } else {
+                $logDetail[] = "✅ Kategori \"$kategori\" memiliki " . count($slots) . " slot.";
+            }
+        }
+
+        // jika ada yang 0 slot
+        $emptyKategori = array_filter($domain, fn($slots) => count($slots) === 0);
+        if (count($emptyKategori) > 0) {
+            $daftarKosong = implode(', ', array_keys($emptyKategori));
+            return "Kategori berikut tidak memiliki slot valid: $daftarKosong";
+        }
+
+        // jika semua punya slot, tapi solusi tetap gagal
+        $slotCounts = array_map(fn($slots) => count($slots), $domain);
+        $totalSlot = array_sum($slotCounts);
+
+        if ($totalSlot === 0) {
+            return "Semua slot habis atau tidak sesuai dengan constraint peserta dan venue.";
+        }
+
+        // analisa kemungkinan bentrok
+        $kategoriTerbanyakSlot = array_keys($slotCounts, max($slotCounts))[0];
+        $kategoriTersedikitSlot = array_keys($slotCounts, min($slotCounts))[0];
+
+        return "Kemungkinan bentrok antar peserta terlalu padat. Kategori dengan slot terbanyak: \"$kategoriTerbanyakSlot\" (" . max($slotCounts) . " slot), dan tersedikit: \"$kategoriTersedikitSlot\" (" . min($slotCounts) . " slot).";
     }
 
 
     private function checkConstraint($slot, $assignment)
     {
-        $start = Carbon::parse($slot['waktu_mulai']);
-        $end = Carbon::parse($slot['waktu_selesai']);
+        $start = Carbon::parse($slot['tanggal'] . ' ' . $slot['waktu_mulai']);
+        $end = Carbon::parse($slot['tanggal'] . ' ' . $slot['waktu_selesai']);
 
-        foreach ($assignment as $key => $assignedSlot) {
-            $assignedStart = Carbon::parse($assignedSlot['waktu_mulai']);
-            $assignedEnd = Carbon::parse($assignedSlot['waktu_selesai']);
+        $bufferTimeInMinutes = 60;
+
+        // Filter hanya assignment di hari yang sama
+        $sameDayAssignments = array_filter($assignment, function ($assignedSlot) use ($slot) {
+            return $assignedSlot['tanggal'] === $slot['tanggal'];
+        });
+
+        foreach ($sameDayAssignments as $assignedSlot) {
+            $assignedStart = Carbon::parse($assignedSlot['tanggal'] . ' ' . $assignedSlot['waktu_mulai']);
+            $assignedEnd = Carbon::parse($assignedSlot['tanggal'] . ' ' . $assignedSlot['waktu_selesai']);
 
             $overlap = $start->lt($assignedEnd) && $end->gt($assignedStart);
 
-            if ($overlap) {
-                // Bentrok peserta: cek irisan anggota peserta
-                $pesertaIntersect = array_intersect($slot['peserta'], $assignedSlot['peserta']);
-                if (!empty($pesertaIntersect)) {
-                    // Log::debug("Bentrok PESERTA anggota [" . implode(',', $pesertaIntersect) . "] dengan $key pada waktu {$slot['waktu_mulai']} - {$slot['waktu_selesai']}");
+            $pesertaIntersect = array_intersect($slot['peserta'], $assignedSlot['peserta']);
+
+            if (!empty($pesertaIntersect)) {
+                if ($overlap) {
                     return false;
                 }
 
-                // Bentrok venue
-                if ($slot['venue'] === $assignedSlot['venue']) {
-                    // Log::debug("Bentrok VENUE dengan $key pada waktu {$slot['waktu_mulai']} - {$slot['waktu_selesai']}");
-                    return false;
+                if ($slot['kategori_lomba'] !== $assignedSlot['kategori_lomba']) {
+                    $gap1 = abs($start->diffInMinutes($assignedEnd, false));
+                    $gap2 = abs($assignedStart->diffInMinutes($end, false));
+
+                    if ($gap1 < $bufferTimeInMinutes && $gap2 < $bufferTimeInMinutes) {
+                        return false;
+                    }
+                }
+            }
+
+            if ($overlap && $slot['venue'] === $assignedSlot['venue']) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function hasRemainingSlotForOtherCategories($currentKey, $slot, $remainingKeys, $shuffledDomain, $assignment)
+    {
+        foreach ($remainingKeys as $key) {
+            if (explode('-', $key)[0] === explode('-', $currentKey)[0]) {
+                $foundValid = false;
+                foreach ($shuffledDomain[$key] as $candidateSlot) {
+                    if ($candidateSlot !== $slot && $this->checkConstraint($candidateSlot, $assignment)) {
+                        $foundValid = true;
+                        break;
+                    }
+                }
+                if (!$foundValid) {
+                    return false; // tidak ada slot tersisa untuk kategori lain yang sama
                 }
             }
         }
 
         return true;
     }
+
+
+
+
 
     public function generateVariabelX()
     {
@@ -813,94 +1884,172 @@ class PenjadwalanController extends Controller
         ]);
     }
 
+    // private function processSubKategoriLomba()
+    // {
+    //     $peserta = Peserta::with('mataLomba')->get();
+
+    //     $mataLombaIds = $peserta->pluck('mata_lomba_id');
+
+    //     $grouped = $mataLombaIds->unique()->values();
+
+    //     $mataLomba = [];
+
+    //     foreach ($grouped as $id) {
+    //         $mataLomba = $peserta->firstWhere('mata_lomba_id', $id)->mataLomba;
+    //         $mataLomba[] = [
+    //             'mata_lomba_id' => $id,
+    //             'nama_mata_lomba' => $mataLomba ? $mataLomba->nama_lomba : 'Tidak Diketahui'
+    //         ];
+    //     }
+
+    //     return $mataLomba;
+    // }
+
     private function processSubKategoriLomba()
     {
-        $peserta = Peserta::with('subKategori')->get();
+        // 1. Ambil peserta_id yang sudah membayar
+        $pesertaIds = Membayar::where('status', 'Sudah Membayar')->pluck('peserta_id');
 
-        $subKategoriIds = $peserta->pluck('sub_kategori_id');
+        // 2. Ambil data pendaftar berdasarkan peserta_id tersebut, beserta relasi mataLomba
+        $pendaftar = Pendaftar::with('mataLomba')
+            ->whereIn('peserta_id', $pesertaIds)
+            ->get();
 
-        $grouped = $subKategoriIds->unique()->values();
+        // 3. Ambil mata_lomba_id unik
+        $mataLombaIds = $pendaftar->pluck('mata_lomba_id')->unique()->values();
 
-        $subKategoriLomba = [];
+        // 4. Bangun list hasil
+        $mataLombaList = [];
 
-        foreach ($grouped as $id) {
-            $subKategori = $peserta->firstWhere('sub_kategori_id', $id)->subKategori;
-            $subKategoriLomba[] = [
-                'sub_kategori_id' => $id,
-                'nama_sub_kategori' => $subKategori ? $subKategori->name_lomba : 'Tidak Diketahui'
+        foreach ($mataLombaIds as $id) {
+            $mataLomba = $pendaftar->firstWhere('mata_lomba_id', $id)?->mataLomba;
+
+            $mataLombaList[] = [
+                'mata_lomba_id' => $id,
+                'nama_mata_lomba' => $mataLomba ? $mataLomba->nama_lomba : 'Tidak Diketahui',
             ];
         }
 
-        return $subKategoriLomba;
+        return $mataLombaList;
     }
+
+
 
     public function processPesertaKategoriLomba()
     {
         $result = [];
         $timMap = [];
 
-        // === 1. Kelompok ===
-        $timList = Tim::with(['anggota.subKategori'])->get();
-        Log::info('Total tim ditemukan: ' . count($timList));
+        $pesertaMembayarIds = Membayar::where('status', 'Sudah Membayar')->pluck('peserta_id')->toArray();
+
+        // Kelompok
+        $timList = Tim::with(['peserta.pendaftar.mataLomba'])
+            ->whereHas('peserta', function ($query) use ($pesertaMembayarIds) {
+                $query->whereIn('peserta.id', $pesertaMembayarIds);
+            })
+            ->get();
 
         foreach ($timList as $tim) {
-            Log::info("Proses tim: {$tim->nama_tim}");
+            $anggotaValid = $tim->peserta->filter(function ($anggota) use ($pesertaMembayarIds) {
+                return in_array($anggota->id, $pesertaMembayarIds);
+            });
 
-            foreach ($tim->anggota as $anggota) {
-                $subKategori = $anggota->subKategori;
-                if (!$subKategori) {
-                    Log::warning("Subkategori tidak ditemukan untuk anggota NIM: {$anggota->nim}");
-                    continue;
-                }
+            if ($anggotaValid->isEmpty())
+                continue;
 
-                $key = $subKategori->name_lomba . '-' . $tim->nama_tim;
+            $mataLomba = $anggotaValid->first()->pendaftar?->mataLomba;
+            if (!$mataLomba)
+                continue;
 
-                $timMap[$key]['kategori_lomba'] = $subKategori->name_lomba;
-                $timMap[$key]['nama_tim'] = $tim->nama_tim;
-                $timMap[$key]['anggota'][] = $anggota->nim;
+            $key = $mataLomba->nama_lomba;
+            $isSerentak = $mataLomba->is_serentak;
 
-                Log::info("Anggota {$anggota->nim} ditambahkan ke tim {$tim->nama_tim} untuk lomba {$subKategori->name_lomba}");
+            if ($isSerentak) {
+                // Serentak & kelompok: nama_tim jadi array of tim
+                $timMap[$key]['kategori_lomba'] = $mataLomba->nama_lomba;
+                $timMap[$key]['nama_tim'][] = $tim->nama_tim;
+                $timMap[$key]['anggota'] = array_merge(
+                    $timMap[$key]['anggota'] ?? [],
+                    $anggotaValid->pluck('nim')->toArray()
+                );
+
+                // Hapus duplikat nama_tim & anggota
+                $timMap[$key]['nama_tim'] = array_unique($timMap[$key]['nama_tim']);
+                $timMap[$key]['anggota'] = array_unique($timMap[$key]['anggota']);
+            } else {
+                // Tidak serentak: tetap satu tim per key
+                $keyTim = $key . '-' . $tim->nama_tim;
+                $timMap[$keyTim]['kategori_lomba'] = $mataLomba->nama_lomba;
+                $timMap[$keyTim]['nama_tim'] = $tim->nama_tim;
+                $timMap[$keyTim]['anggota'] = $anggotaValid->pluck('nim')->toArray();
             }
         }
 
-        // === 2. Individu ===
-        $pesertaIndividu = Peserta::with('subKategori')
+        // Individu
+        $pesertaIndividu = Peserta::with('pendaftar.mataLomba')
             ->whereDoesntHave('tim')
+            ->whereIn('id', $pesertaMembayarIds)
             ->get();
-        Log::info('Total peserta individu: ' . count($pesertaIndividu));
 
         foreach ($pesertaIndividu as $pesertaItem) {
-            $subKategori = $pesertaItem->subKategori;
-            if (!$subKategori) {
-                Log::warning("Subkategori tidak ditemukan untuk peserta individu NIM: {$pesertaItem->nim}");
+            $mataLomba = $pesertaItem->pendaftar?->mataLomba;
+            if (!$mataLomba)
                 continue;
+
+            $key = $mataLomba->nama_lomba;
+            $isSerentak = $mataLomba->is_serentak;
+
+            if ($isSerentak) {
+                $timMap[$key]['kategori_lomba'] = $mataLomba->nama_lomba;
+                $timMap[$key]['nama_tim'] = null;
+                $timMap[$key]['anggota'][] = $pesertaItem->nim;
+            } else {
+                $key .= '-' . $pesertaItem->nim;
+                $timMap[$key] = [
+                    'kategori_lomba' => $mataLomba->nama_lomba,
+                    'nama_tim' => null,
+                    'anggota' => [$pesertaItem->nim],
+                ];
             }
-
-            $key = $subKategori->name_lomba . '-' . $pesertaItem->nim;
-
-            $timMap[$key] = [
-                'kategori_lomba' => $subKategori->name_lomba,
-                'nama_tim' => null,
-                'anggota' => [$pesertaItem->nim],
-            ];
-
-            Log::info("Peserta individu {$pesertaItem->nim} ditambahkan ke lomba {$subKategori->name_lomba}");
         }
 
         $result = array_values($timMap);
-        Log::info('Total hasil peserta-kategori: ' . count($result));
 
+        // dd($result);
         return $result;
     }
 
 
+
     public function destroy($id)
     {
-        $jadwal = Jadwal::findOrFail($id);
-        $jadwal->delete();
+        $agenda = Agenda::findOrFail($id);
+        $agenda->delete();
 
-        return redirect()->back()->with('success', 'Jadwal berhasil dihapus.');
+        return redirect()->back()->with('success', 'Agenda berhasil dihapus.');
     }
+
+    public function destroyJadwal($id)
+    {
+        try {
+            $jadwal = Jadwal::findOrFail($id);
+            // dd($id);
+
+            // dd($jadwal->agenda());
+            // hapus agenda yang terkait dengan jadwal ini
+            $jadwal->agendas()->delete();
+
+            // hapus jadwal
+            $jadwal->delete();
+
+            return redirect()->route('jadwal.index')->with('success', 'Jadwal dan agenda terkait berhasil dihapus');
+        } catch (\Exception $e) {
+            \Log::error('Gagal hapus jadwal', ['jadwal_id' => $id, 'error' => $e->getMessage()]);
+            return back()->with('error', 'Gagal menghapus jadwal');
+        }
+    }
+
+
 
 
 

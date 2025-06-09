@@ -11,20 +11,17 @@ class Peserta extends Model
     protected $table = 'peserta';
 
     protected $fillable = [
-        'nama',
+        'nama_peserta',
         'nim',
-        'nama_tim',
-        'alamat_institusi',
-        'provinsi_id',
-        'institusi_id',
-        'jurusan_id',
-        'sub_kategori_id',
+        'provinsi',
+        'institusi',
+        'prodi',
         'user_id',
         'email',
-        'hp',
-        'ktm_path',
-        'ttd_path',
-        'is_leader',
+        'no_hp',
+        'url_ktm',
+        'url_ttd',
+        'jenis_peserta',
     ];
 
     public function provinsi()
@@ -37,10 +34,9 @@ class Peserta extends Model
         return $this->belongsTo(Institusi::class);
     }
 
-
-    public function subKategori()
+    public function mataLomba()
     {
-        return $this->belongsTo(SubKategori::class, 'sub_kategori_id');
+        return $this->belongsTo(MataLomba::class, 'mata_lomba_id');
     }
 
     public function user()
@@ -48,15 +44,25 @@ class Peserta extends Model
         return $this->belongsTo(User::class, 'user_id');
     }
 
-    public function jadwal()
-    {
-        return $this->hasMany(Jadwal::class);
-    }
-
     public function tim()
     {
-        return $this->belongsToMany(Tim::class, 'bergabung')->withPivot('posisi')->withTimestamps();
+        return $this->belongsToMany(Tim::class, 'bergabung', 'peserta_id', 'tim_id')
+                    ->withPivot('posisi');
     }
 
+    public function bergabung()
+    {
+        return $this->hasOne(Bergabung::class, 'peserta_id');
+    }
+
+    public function pendaftar()
+    {
+        return $this->hasOne(Pendaftar::class, 'peserta_id');
+    }
+
+    public function membayar()
+    {
+        return $this->hasMany(Membayar::class, 'peserta_id');
+    }
 
 }

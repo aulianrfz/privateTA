@@ -6,105 +6,183 @@ use Illuminate\Support\Str;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Storage;  // Tambahkan ini untuk menggunakan Storage facade
-use App\Models\SubKategori;
+use Illuminate\Support\Facades\Storage;
+use App\Models\MataLomba;
 use App\Models\Provinsi;
-use App\Models\Jurusan;
 use App\Models\Institusi;
 use App\Models\Peserta;
-
+use App\Models\Jurusan;
+use App\Models\Invoice;
+use App\Models\Membayar;
+use App\Models\Pendaftar;
+use App\Models\Tim;
 
 class PendaftaranController extends Controller
 {
-    // Menampilkan form pendaftaran
-    public function showForm($id_subkategori)
+    public function showForm($id_mataLomba)
     {
-        $subKategori = SubKategori::findOrFail($id_subkategori);
+        $mataLomba = MataLomba::findOrFail($id_mataLomba);
         $provinsi = Provinsi::all();
-        $jurusan = Jurusan::all();
         $institusi = Institusi::all();
+        $prodi = Jurusan::all();
 
-        $maksPeserta = $subKategori->maks_peserta;
+        $maksPeserta = $mataLomba->maks_peserta;
 
-        return view('pendaftaran.formpeserta', compact('subKategori', 'provinsi', 'jurusan', 'institusi', 'maksPeserta'));
+        return view('user.pendaftaran.formpeserta', compact('mataLomba', 'provinsi', 'institusi', 'maksPeserta', 'prodi'));
     }
 
-    // Menyimpan data peserta
+
     public function store(Request $request)
     {
-        // Validasi input
         $request->validate([
-            'id_subkategori' => 'required|exists:sub_kategori,id',
-            'peserta.*.nama' => 'required',
+            'id_mataLomba' => 'required|exists:mata_lomba,id',
+            'peserta.*.nama_peserta' => 'required',
             'peserta.*.nim' => 'required',
             'peserta.*.email' => 'required|email',
-            'peserta.*.hp' => 'required',
-            'nama_tim' => 'nullable|string|max:255',
-            'peserta.*.signature' => 'nullable|string', // validasi base64 signature
+            'peserta.*.no_hp' => 'required',
+            'peserta.*.signature' => 'nullable|string',
         ]);
 
-        // Iterasi peserta yang dikirim dalam array 'peserta'
-        foreach ($request->peserta as $key => $peserta) {
-            // Menangani file upload untuk KTP
+        $mataLomba = MataLomba::findOrFail($request->id_mataLomba);
+        $jenisPeserta = $mataLomba->maks_peserta == 1 ? 'Individu' : 'Kelompok';
+
+        if ($jenisPeserta === 'Kelompok') {
+            $jumlahKetua = collect($request->peserta)
+                ->pluck('posisi')
+                ->filter(fn($posisi) => strtolower($posisi) === 'ketua')
+                ->count();
+
+            if ($jumlahKetua !== 1) {
+                return back()->withInput()->with('error', 'Harus ada tepat satu Ketua dalam tim.');
+            }
+        }
+
+        $institusi = $request->peserta[0]['institusi'] ?? null;
+
+        if (!$institusi) {
+            return back()->withInput()->with('error', 'Institusi wajib diisi.');
+        }
+
+        if ($jenisPeserta === 'Kelompok') {
+            $timSudahAda = Tim::whereHas('peserta', function ($q) use ($institusi, $request) {
+                $q->where('institusi', $institusi)
+                ->whereHas('pendaftar', function ($p) use ($request) {
+                    $p->where('mata_lomba_id', $request->id_mataLomba);
+                });
+            })->distinct()->count();
+
+            if ($timSudahAda >= 3) {
+                return back()->withInput()->with('error', 'Institusi ini sudah mendaftarkan maksimal 3 tim untuk mata lomba ini.');
+            }
+        } else {
+            $individuTerdaftar = Peserta::where('institusi', $institusi)
+                ->where('jenis_peserta', 'Individu')
+                ->whereHas('pendaftar', function ($q) use ($request) {
+                    $q->where('mata_lomba_id', $request->id_mataLomba);
+                })->count();
+
+            if ($individuTerdaftar >= 3) {
+                return back()->withInput()->with('error', 'Institusi ini sudah mendaftarkan maksimal 3 individu untuk mata lomba ini.');
+            }
+        }
+
+        $tim = null;
+        $invoice = null;
+
+        if ($jenisPeserta === 'Kelompok') {
+            $tim = Tim::create([
+                'nama_tim' => $request->input('nama_tim'),
+            ]);
+
+            $invoice = Invoice::create([
+                'total_tagihan' => $mataLomba->biaya_pendaftaran,
+                'jabatan' => 'Ketua / Tim',
+            ]);
+        }
+
+        foreach ($request->peserta as $pesertaData) {
+        $jumlahLombaDiikuti = Peserta::where('nama_peserta', $pesertaData['nama_peserta'])
+            ->where('nim', $pesertaData['nim'])
+            ->where('institusi', $pesertaData['institusi'] ?? null)
+            ->whereHas('pendaftar')
+            ->count();
+
+        if ($jumlahLombaDiikuti >= 3) {
+            return back()->withInput()->with('error', "Peserta {$pesertaData['nama_peserta']} sudah terdaftar di 3 mata lomba.");
+        }
+    }
+
+        foreach ($request->peserta as $key => $pesertaData) {
             $ktpPath = null;
             if ($request->hasFile('peserta.' . $key . '.ktp')) {
-                // Menyimpan file KTP ke folder 'ktps'
                 $ktpPath = $request->file('peserta.' . $key . '.ktp')->store('ktps', 'public');
             }
 
-            // Menangani tanda tangan (signature) dalam format base64
             $ttdPath = null;
-            if (!empty($peserta['signature'])) {
-                $base64Image = $peserta['signature'];
-                // Pastikan format base64 valid dan bukan data kosong
+            if (!empty($pesertaData['signature'])) {
+                $base64Image = $pesertaData['signature'];
                 if (preg_match('/^data:image\/(png|jpeg);base64,/', $base64Image)) {
-                    // Menghapus prefix base64 dan spasi
                     $image = str_replace(['data:image/png;base64,', 'data:image/jpeg;base64,'], '', $base64Image);
                     $image = str_replace(' ', '+', $image);
-
-                    // Nama file tanda tangan unik berdasarkan waktu dan string acak
                     $imageName = 'ttd_' . time() . '_' . Str::random(10) . '.png';
 
-                    // Pastikan folder 'uploads/ttd' ada sebelum menyimpan
                     $path = public_path('uploads/ttd');
                     if (!File::exists($path)) {
                         File::makeDirectory($path, 0775, true);
                     }
 
-                    // Menyimpan gambar ke folder 'uploads/ttd/'
                     $imagePath = public_path('uploads/ttd/' . $imageName);
                     File::put($imagePath, base64_decode($image));
 
-                    // Menyimpan path gambar untuk disimpan di database
                     $ttdPath = 'uploads/ttd/' . $imageName;
                 }
             }
 
-            // Menyimpan data peserta ke database
-            Peserta::create([
-                'nama' => $peserta['nama'],
-                'nim' => $peserta['nim'],
-                'email' => $peserta['email'],
-                'hp' => $peserta['hp'],
-                'jurusan_id' => $peserta['jurusan_id'] ?? null,
-                'provinsi_id' => $peserta['provinsi_id'] ?? null,
-                'institusi_id' => $peserta['institusi_id'] ?? null,
-                'sub_kategori_id' => $request->id_subkategori, // Ambil dari form
-                'user_id' => Auth::id(), 
-                'nama_tim' => $request->nama_tim,
-                'is_leader' => $key == 0 ? 1 : 0, // Menandakan peserta pertama sebagai leader
-                'ktm_path' => $ktpPath,  // Menyimpan path KTP
-                'ttd_path' => $ttdPath,  // Menyimpan path tanda tangan
+            $peserta = Peserta::create([
+                'nama_peserta' => $pesertaData['nama_peserta'],
+                'nim' => $pesertaData['nim'],
+                'email' => $pesertaData['email'],
+                'no_hp' => $pesertaData['no_hp'],
+                'prodi' => $pesertaData['prodi'] ?? null,
+                'provinsi' => $pesertaData['provinsi'] ?? null,
+                'institusi' => $pesertaData['institusi'] ?? null,
+                'user_id' => Auth::id(),
+                'jenis_peserta' => $jenisPeserta,
+                'url_ktm' => $ktpPath,
+                'url_ttd' => $ttdPath,
+            ]);
+
+            Pendaftar::create([
+                'mata_lomba_id' => $request->id_mataLomba,
+                'peserta_id' => $peserta->id,
+                'url_qrCode' => 0,
+            ]);
+
+            if ($tim) {
+                $tim->peserta()->attach($peserta->id, ['posisi' => $pesertaData['posisi'] ?? 'Anggota']);
+            }
+
+            if ($jenisPeserta === 'Individu') {
+                $invoice = Invoice::create([
+                    'total_tagihan' => $mataLomba->biaya_pendaftaran,
+                    'jabatan' => 'Individu',
+                ]);
+            }
+
+            Membayar::create([
+                'peserta_id' => $peserta->id,
+                'invoice_id' => $invoice->id,
+                'bukti_pembayaran' => null,
             ]);
         }
 
-        // Redirect atau tampilkan view setelah berhasil mendaftar
-        return view('pendaftaran.berhasil')->with('success', 'Pendaftaran berhasil!');
+        return view('user.pendaftaran.berhasil')->with('success', 'Pendaftaran berhasil!');
     }
 
-    public function sukses()
-    {
-        return view('pendaftaran.berhasil');
-    }
+
+
+    // public function sukses()
+    // {
+    //     return view('user.pendaftaran.berhasil');
+    // }
 }
-

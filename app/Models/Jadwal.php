@@ -12,40 +12,21 @@ class Jadwal extends Model
     protected $fillable = [
         'nama_jadwal',
         'tahun',
-        'sub_kategori_id',
-        'tanggal',
-        'waktu_mulai',
-        'waktu_selesai',
-        'venue_id',
-        'peserta_id',
-        'juri_id',
         'version',
-        'tim_id',
-        'status'
+        'status',
+        'alasan_gagal',
+        'event_id'
     ];
 
-    public function subKategori()
+    public function agendas()
     {
-        return $this->belongsTo(SubKategori::class, 'sub_kategori_id');
+        return $this->hasMany(Agenda::class, 'jadwal_id');
     }
 
-    public function venue()
+    public function event()
     {
-        return $this->belongsTo(Venue::class, 'venue_id');
+        return $this->belongsTo(Event::class, 'event_id');
     }
 
-    public function peserta()
-    {
-        return $this->belongsTo(Peserta::class, 'peserta_id');
-    }
 
-    public function juri()
-    {
-        return $this->belongsTo(Juri::class, 'juri_id');
-    }
-
-    public function tim()
-    {
-        return $this->belongsTo(Tim::class, 'tim_id');
-    }
 }

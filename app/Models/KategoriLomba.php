@@ -9,9 +9,16 @@ class KategoriLomba extends Model
 {
     use HasFactory;
 
-    protected $table = 'kategori_lomba';
+    protected $table = 'kategori';
 
     protected $fillable = [
-        'name',
+        'event_id',
+        'nama_kategori',
     ];
+
+    public function event()
+    {
+        return $this->belongsTo(Event::class);
+    }
+
 }

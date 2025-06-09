@@ -11,10 +11,10 @@ class Juri extends Model
     use HasFactory;
 
     protected $table = 'juri'; 
-    protected $fillable = ['nama', 'jabatan', 'sub_kategori_id'];
+    protected $fillable = ['nama', 'jabatan', 'mata_lomba_id'];
 
-    public function subKategori()
+    public function mataLomba()
     {
-        return $this->belongsTo(SubKategori::class);
+        return $this->belongsTo(MataLomba::class);
     }
 }

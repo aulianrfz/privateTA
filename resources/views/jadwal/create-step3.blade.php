@@ -1,80 +1,212 @@
-@extends('layouts.app')
+@extends('layouts.apk')
 
 @section('content')
-    <div class="container">
-        <h3 class="text-center font-weight-bold mb-4">Buat Jadwal</h3>
+    {{-- 1. Tambahkan CSS untuk Flatpickr --}}
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
 
-        <!-- Step Indicator -->
-        <div class="d-flex justify-content-center mb-4">
-            <div class="step active">1</div>
-            <div class="line"></div>
-            <div class="step active">2</div>
-            <div class="line"></div>
-            <div class="step active">3</div>
-        </div>
+    <style>
+        /* ... (semua style dari jawaban sebelumnya tetap sama) ... */
+        body {
+            background-color: #f4f7f6;
+        }
 
-        <div class="card p-4">
-            <h5 class="mb-3 font-weight-bold">Constraint Tambahan</h5>
+        .card-stepper {
+            background-color: #fff;
+            border-radius: 1.5rem;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.05);
+            border: none;
+            padding: 2.5rem;
+        }
 
-            <form action="{{ route('jadwal.store') }}" method="POST">
-                @csrf
+        .stepper-wrapper {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 3.5rem;
+            position: relative;
+        }
 
-                @foreach ($subKategoriLomba as $lomba)
-                    <div class="form-row align-items-center mb-3">
-                        <div class="col-md-3">
-                            <label class="mb-1">{{ $lomba['nama_sub_kategori'] }}</label>
+        .stepper-item {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            flex: 1;
+        }
+
+        .stepper-item::before {
+            content: "";
+            position: absolute;
+            top: 15px;
+            left: -50%;
+            right: 50%;
+            height: 3px;
+            background-color: #e0e0e0;
+            z-index: 1;
+        }
+
+        .stepper-item:first-child::before {
+            content: none;
+        }
+
+        .stepper-item.active::before {
+            background-color: #0d6efd;
+        }
+
+        .step-counter {
+            height: 30px;
+            width: 30px;
+            border-radius: 50%;
+            background: #e0e0e0;
+            border: 3px solid #e0e0e0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-weight: bold;
+            color: #fff;
+            z-index: 2;
+            transition: all 0.3s ease;
+        }
+
+        .stepper-item.active .step-counter {
+            background-color: #0d6efd;
+            border-color: #0d6efd;
+        }
+
+        .form-control,
+        .form-select {
+            background-color: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 0.5rem;
+            padding: 0.75rem 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .form-control:focus,
+        .form-select:focus {
+            background-color: #fff;
+            border-color: #86b7fe;
+            box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+        }
+
+        .form-label-custom {
+            font-weight: 500;
+            color: #343a40;
+        }
+
+        .btn-submit {
+            background-color: #17a2b8;
+            border: none;
+            border-radius: 0.75rem;
+            padding: 0.75rem 2rem;
+            font-weight: 600;
+            color: white;
+            transition: all 0.3s ease;
+        }
+
+        .btn-submit:hover {
+            background-color: #138496;
+            transform: translateY(-2px);
+        }
+
+        .btn-previous {
+            background-color: #fff;
+            border: 2px solid #e0e0e0;
+            border-radius: 0.75rem;
+            padding: 0.75rem 2rem;
+            font-weight: 600;
+            color: #6c757d;
+            transition: all 0.3s ease;
+        }
+
+        .btn-previous:hover {
+            background-color: #f8f9fa;
+            border-color: #6c757d;
+            color: #343a40;
+        }
+    </style>
+
+    <div class="container py-5">
+        <div class="row d-flex justify-content-center">
+            <div class="col-xl-10 col-lg-11">
+                <div class="card-stepper">
+                    <div class="card-body">
+
+                        <h2 class="text-center fw-bold mb-3">Buat Jadwal</h2>
+
+                        <div class="stepper-wrapper">
+                            <div class="stepper-item active">
+                                <div class="step-counter">1</div>
+                            </div>
+                            <div class="stepper-item active">
+                                <div class="step-counter">2</div>
+                            </div>
+                            <div class="stepper-item active">
+                                <div class="step-counter">3</div>
+                            </div>
                         </div>
-                        <div class="col-md-3">
-                            <select class="form-control" name="hari[{{ $lomba['sub_kategori_id'] }}]">
-                                @foreach ($jadwalHarian as $index => $jadwal)
-                                    <option value="{{ $jadwal['tanggal'] }}">
-                                        {{ \Carbon\Carbon::parse($jadwal['tanggal'])->translatedFormat('l, d M Y') }}
-                                    </option>
-                                @endforeach
-                            </select>
-                        </div>
-                        <div class="col-md-3">
-                            <input type="time" class="form-control" name="waktu_mulai[{{ $lomba['sub_kategori_id'] }}]"
-                                placeholder="Waktu Mulai">
-                        </div>
-                        <div class="col-md-3">
-                            <input type="time" class="form-control" name="waktu_selesai[{{ $lomba['sub_kategori_id'] }}]"
-                                placeholder="Waktu Selesai">
-                        </div>
-                        <div class="col-md-3">
-                            <input type="number" class="form-control" name="saving_time[{{ $lomba['sub_kategori_id'] }}]"
-                                placeholder="Saving Time (menit)">
-                        </div>
+
+                        <h4 class="fw-bold mb-4 mt-5">Constraint Tambahan</h4>
+
+                        <form action="{{ route('jadwal.store') }}" method="POST">
+                            @csrf
+
+                            @foreach ($mataLomba as $lomba)
+                                <div class="row align-items-center mb-3 gx-3">
+                                    <div class="col-md-3">
+                                        <label class="form-label-custom mb-0">{{ $lomba['nama_mata_lomba'] }}</label>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <select class="form-select" name="hari[{{ $lomba['mata_lomba_id'] }}]">
+                                            <option value="" selected>Pilih Hari</option>
+                                            @foreach ($jadwalHarian as $jadwal)
+                                                <option value="{{ $jadwal['tanggal'] }}">
+                                                    {{ \Carbon\Carbon::parse($jadwal['tanggal'])->translatedFormat('l, d M Y') }}
+                                                </option>
+                                            @endforeach
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2">
+                                        {{-- 2. Ubah type="time" menjadi type="text" dan tambahkan class="time-picker" --}}
+                                        <input type="text" class="form-control time-picker"
+                                            name="waktu_mulai[{{ $lomba['mata_lomba_id'] }}]" placeholder="Mulai">
+                                    </div>
+                                    <div class="col-md-2">
+                                        {{-- Lakukan hal yang sama di sini --}}
+                                        <input type="text" class="form-control time-picker"
+                                            name="waktu_selesai[{{ $lomba['mata_lomba_id'] }}]" placeholder="Selesai">
+                                    </div>
+                                    <div class="col-md-2">
+                                        <input type="number" class="form-control"
+                                            name="saving_time[{{ $lomba['mata_lomba_id'] }}]" placeholder="Saving Time">
+                                    </div>
+                                    <!-- <div class="col-md-2">
+                                        <input type="number" class="form-control" name="round[{{ $lomba['mata_lomba_id'] }}]"
+                                            placeholder="Round" min="1">
+                                    </div> -->
+                                </div>
+                            @endforeach
+
+                            <div class="d-flex justify-content-between mt-5">
+                                <a href="javascript:history.back()" class="btn btn-previous">Previous step</a>
+                                <button type="submit" class="btn btn-submit">Submit</button>
+                            </div>
+                        </form>
                     </div>
-                @endforeach
-
-                <div class="text-right mt-4">
-                    <a href="{{ route('jadwal.create') }}" class="btn btn-danger">Batal</a>
-                    <button type="submit" class="btn btn-success">Simpan</button>
                 </div>
-            </form>
+            </div>
         </div>
     </div>
 
-    <style>
-        .step {
-            width: 30px;
-            height: 30px;
-            background-color: #007bff;
-            color: white;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-        }
-
-        .line {
-            width: 60px;
-            height: 4px;
-            background-color: #007bff;
-            margin: 0 10px;
-            align-self: center;
-        }
-    </style>
+    {{-- 3. Tambahkan script untuk Flatpickr di akhir --}}
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script>
+        // Inisialisasi Flatpickr pada semua input dengan class .time-picker
+        flatpickr(".time-picker", {
+            enableTime: true,    // Mengaktifkan pilihan waktu
+            noCalendar: true,    // Menonaktifkan pilihan tanggal
+            dateFormat: "H:i",   // Format yang disimpan (H=24 jam, i=menit)
+            time_24hr: true      // Memaksa tampilan UI menggunakan format 24 jam
+        });
+    </script>
 @endsection

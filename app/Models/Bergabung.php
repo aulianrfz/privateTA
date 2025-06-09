@@ -1,31 +1,26 @@
 <?php
 
-// app/Models/Bergabung.php
-
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\Pivot;
 
-class Bergabung extends Model
+class Bergabung extends Pivot
 {
-    use HasFactory;
-
     protected $table = 'bergabung';
 
     protected $fillable = [
-        'tim_id',
         'peserta_id',
+        'tim_id',
         'posisi',
     ];
 
-    public function tim()
-    {
-        return $this->belongsTo(Tim::class);
-    }
-
     public function peserta()
     {
-        return $this->belongsTo(Peserta::class);
+        return $this->belongsTo(Peserta::class, 'peserta_id');
+    }
+
+    public function tim()
+    {
+        return $this->belongsTo(Tim::class, 'tim_id');
     }
 }
